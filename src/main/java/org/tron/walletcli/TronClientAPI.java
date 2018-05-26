@@ -4,6 +4,9 @@ import org.json.simple.JSONObject;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.SendTo;
+import org.tron.common.utils.FileUtil;
+
+import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -15,6 +18,20 @@ import java.util.concurrent.BlockingQueue;
 public class TronClientAPI {
     private HashMap<String, TronClient> sessionMap = new HashMap<>();
     private TronClient globalTronClient = new TronClient();
+
+    private static Encryption encryption;
+
+    {
+        try {
+            InputStream inputStream = getClass().getResourceAsStream("/tronks.ks");
+            String data = FileUtil.readFromInputStream(inputStream);
+            System.out.println("STRING IS: " + data);
+            encryption = new Encryption(data.trim());
+        } catch (Exception e) {
+            System.out.println("INITEXCEPTION: " + e.getMessage());
+        }
+    }
+
 
     @RequestMapping(value="/registerWallet", method=RequestMethod.POST)
     public JSONObject registerWallet(@RequestParam("password") String password,
