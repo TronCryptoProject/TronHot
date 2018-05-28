@@ -18,8 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.util.encoders.Hex;
 import org.tron.api.GrpcAPI;
-import org.tron.api.GrpcAPI.AccountList;
-import org.tron.api.GrpcAPI.AssetIssueList;
 import org.tron.api.GrpcAPI.NodeList;
 import org.tron.api.GrpcAPI.WitnessList;
 import org.tron.api.GrpcAPI.Node;
@@ -67,73 +65,75 @@ public class TronClient {
 
   private static final Logger logger = LoggerFactory.getLogger("TronClient");
   private WalletClient wallet;
-  private HashMap<String, ArrayList<HashMap<String,String>>> tx_map = new HashMap<>();
   public static final String FAILED = "failed";
   public static final String SUCCESS = "success";
-
+  public static final long DROP = 1000000;
   private static Config config = Configuration.getByPath("config.conf");
   private static List<String> fullnodelist = config.getStringList("fullnode.ip.list");
   private static BlockingQueue<ItemBaggage> priorityQueue = new PriorityBlockingQueue<ItemBaggage>();
 	static int ip_idx = 0;
+	private Encryption encryption;
+
+	{
+		try{
+			InputStream inputStream = getClass().getResourceAsStream("/tronks.ks");
+			String data = FileUtil.readFromInputStream(inputStream);
+			encryption = new Encryption(data.trim());
+		}catch (Exception e){}
+	}
 
 
-  static {
+	static {
   	runDaemonThread();
   }
+
   public JSONObject registerWallet(String password, String accountName) {
 	  JSONObject json_obj = new JSONObject();
 	  if (!WalletClient.passwordValid(password)) {
 		  json_obj.put("result", FAILED);
-		  json_obj.put("reason", "Password is not valid.");
+		  json_obj.put("reason", "Password not valid");
 	  }else{
 		  wallet = new WalletClient(true);
-          //Boolean ret = wallet.createAccount(Protocol.AccountType.Normal, accountName.getBytes());
+		  wallet.setAccountName(accountName);
 		  wallet.store(password);
+		  wallet.setPDirty(password);
 		  json_obj.put("result", SUCCESS);
-		  json_obj.put("privKey", wallet.getPrivateKey());
-		  json_obj.put("password", password);
+		  json_obj.put("privAddress", wallet.getPrivateKey());
+		  json_obj.put("passcode", password);
 		  json_obj.put("accountName", wallet.getAccountName());
           json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-          json_obj.put("rawPubAddress", wallet.getRawAddress());
 	  }
 
 	  return json_obj;
   }
 
-  public JSONObject importWalletWithPubAddressCheck(String password, String priKey, String checkerPubAddress){
-	  JSONObject json_obj = new JSONObject();
-	  JSONObject res_json = importWallet(password, priKey);
-	  System.out.println(res_json);
-	  if (res_json.containsKey("result") && res_json.get("result") == SUCCESS){
-	  		if (!res_json.get("pubAddress").equals(checkerPubAddress)){
-				json_obj.put("result", FAILED);
-				json_obj.put("reason", "Please make sure the private key and password match the account address you" +
-						" are signing into.");
-				return json_obj;
-			}else{
-	  			return res_json;
-			}
-	  }else{
-	  		return res_json;
-	  }
-  }
+	public JSONObject createPaperWallet() {
+		JSONObject json_obj = new JSONObject();
+		WalletClient wallet = new WalletClient(true);
+
+		json_obj.put("result", SUCCESS);
+		json_obj.put("privAddress", wallet.getPrivateKey());
+		json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
+		return json_obj;
+	}
+
 
   public JSONObject importWallet(String password, String priKey) {
 		JSONObject json_obj = new JSONObject();
 		if (!WalletClient.passwordValid(password)) {
 			json_obj.put("result", FAILED);
-			json_obj.put("reason", "Password is not valid.");
+			json_obj.put("reason", "Password is not valid");
 		  	return json_obj;
 		}
 		if (!WalletClient.priKeyValid(priKey)){
 			json_obj.put("result", FAILED);
-            json_obj.put("reason", "Private key is not valid.");
+            json_obj.put("reason", "Private key is not valid");
 		  	return json_obj;
 		}
 		wallet = new WalletClient(priKey);
 		if (wallet.getEcKey() == null) {
 			json_obj.put("result", FAILED);
-            json_obj.put("reason", "Unable to get wallet using private key");
+            json_obj.put("reason", "Init wallet failed");
 		  	return json_obj;
 		}
 
@@ -141,114 +141,39 @@ public class TronClient {
 		json_obj.put("result", SUCCESS);
 		json_obj.put("accountName", wallet.getAccountName());
 		json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-		json_obj.put("rawPubAddress", wallet.getRawAddress());
-
+	    json_obj.put("pdirty", wallet.isPDirty());
 		return json_obj;
   }
 
   public JSONObject restoreWallet(String pubKey){
-      JSONObject json_obj = new JSONObject();
-      wallet = WalletClient.GetWalletIgnorPrivKey(pubKey);
+  	JSONObject json_obj = new JSONObject();
+  	wallet = WalletClient.GetWalletIgnorPrivKey(pubKey);
 
 	if (wallet == null) {
 	    json_obj.put("result", FAILED);
-        json_obj.put("reason", "Public key is not valid.");
+        json_obj.put("reason", "Public address not valid!");
 	}else{
-
         json_obj.put("result", SUCCESS);
         json_obj.put("accountName", wallet.getAccountName());
         json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-        json_obj.put("rawPubAddress", wallet.getRawAddress());
     }
 
     return json_obj;
   }
-  
-  public JSONObject setAccountName(String newaccountname){
-	  JSONObject json_obj = new JSONObject();
-	  Account account = queryAccount();
-	  if (account != null){
-		  boolean res = wallet.updateAccount(newaccountname);
-		  if (!res){
-			  logger.warn("Warning: Couldn't update account!");
-			  json_obj.put("result", FAILED);
-              json_obj.put("reason", "Transaction to create account failed.");
-		  }else{
-			  json_obj.put("result", SUCCESS);
-		  }
-	  }else{
-		  json_obj.put("result", FAILED);
-          json_obj.put("reason", "Failure to query account");
-	  }
 
-	  return json_obj;
-  }
-
-
-  public JSONObject changePassword(String oldPassword, String newPassword) {
-      JSONObject json_obj = new JSONObject();
-
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: ChangePassword failed, Please login first !!");
-	  json_obj.put("result", FAILED);
-	  json_obj.put("reason", "Unable to change password because you need to login in first.");
-	  return json_obj;
-	}
-	if (!WalletClient.passwordValid(oldPassword)) {
-	  logger.warn("Warning: ChangePassword failed, OldPassword is invalid !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Old password is not valid.");
-        return json_obj;
-	}
-	if (!WalletClient.passwordValid(newPassword)) {
-	  logger.warn("Warning: ChangePassword failed, NewPassword is invalid !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "New password is not valid.");
-        return json_obj;
-	}
-	if (!WalletClient.checkPassWord(oldPassword)) {
-	  logger.warn("Warning: ChangePassword failed, Wrong password !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Wrong old password entered.");
-        return json_obj;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(oldPassword);
-	  if (wallet == null) {
-		logger.warn("Warning: ChangePassword failed, No wallet !!");
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Unable to fetch wallet from storage.");
-          return json_obj;
-	  }
-	}
-	byte[] priKeyAsc = wallet.getEcKey().getPrivKeyBytes();
-	String priKey = Hex.toHexString(priKeyAsc, 0, priKeyAsc.length);
-	JSONObject import_res = importWallet(newPassword, priKey);
-
-    if (import_res.get("result").equals(SUCCESS)){
-        json_obj.put("result", SUCCESS);
-    }else{
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Failure to import wallet!");
-    }
-
-	return json_obj;
-  }
 
   public JSONObject login(String password) {
       JSONObject json_obj = new JSONObject();
 	if (!WalletClient.passwordValid(password)) {
 	    json_obj.put("result", FAILED);
-        json_obj.put("reason", "Password is not valid.");
+        json_obj.put("reason", "Password not valid");
 	  return json_obj;
 	}
 	if (wallet == null) {
 	  wallet = WalletClient.GetWalletByStorage(password);
 	  if (wallet == null) {
-		logger.warn("Warning: Login failed, Please registerWallet or importWallet first !!");
           json_obj.put("result", FAILED);
-          json_obj.put("reason", "You need to register or import wallet before logging in.");
+          json_obj.put("reason", "Wallet not found");
           return json_obj;
 	  }
 	}
@@ -257,22 +182,21 @@ public class TronClient {
 	    json_obj.put("result", SUCCESS);
 	    json_obj.put("accountName", wallet.getAccountName());
 	    json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-        json_obj.put("rawPubAddress", wallet.getRawAddress());
     }else{
 	    json_obj.put("result", FAILED);
-        json_obj.put("reason", "Login failed because something is wrong with the password.");
+        json_obj.put("reason", "Login failed!");
     }
     return json_obj;
   }
 
   public JSONObject logout() {
-      JSONObject json_obj = new JSONObject();
+  	JSONObject json_obj = new JSONObject();
 	if (wallet != null) {
-	  wallet.logout();
+		wallet.logout();
         json_obj.put("result", SUCCESS);
 	}else{
         json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to logout from wallet.");
+        json_obj.put("reason", "Logout failed!");
     }
     return json_obj;
   }
@@ -281,55 +205,50 @@ public class TronClient {
   public JSONObject backupWallet(String password) {
       JSONObject json_obj = new JSONObject();
 
-	if (wallet == null || !wallet.isLoginState()) {
-	    logger.warn("Warning: BackupWallet failed, Please login first !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to change password because you need to login in first.");
-	    return json_obj;
-	}
-	if (!WalletClient.passwordValid(password)) {
-	  logger.warn("Warning: BackupWallet failed, password is Invalid !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Password is not valid.");
-        return json_obj;
-	}
-
-	if (!WalletClient.checkPassWord(password)) {
-	  logger.warn("Warning: BackupWallet failed, Wrong password !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Wrong password entered.");
-        return json_obj;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: BackupWallet failed, no wallet can be backup !!");
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Unable to fetch wallet from storage. There's no backup.");
-          return json_obj;
+	  if (wallet == null || !wallet.isLoginState()) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Not logged in!");
+		  return json_obj;
 	  }
-	}
-	ECKey ecKey = wallet.getEcKey();
-	byte[] privKeyPlain = ecKey.getPrivKeyBytes();
-	//Enced by encPassword
-	String priKey = ByteArray.toHexString(privKeyPlain);
+	  if (!WalletClient.passwordValid(password)) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Invalid password!");
+		  return json_obj;
+	  }
 
-	json_obj.put("result", SUCCESS);
-	json_obj.put("privateKey", priKey);
-	json_obj.put("publicKey", WalletClient.loadPubKey());
-	json_obj.put("password", WalletClient.loadPassword());
-	json_obj.put("accountName", queryAccountJSON().get("accountName"));
+	  if (!WalletClient.checkPassWord(password)) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Wrong password!");
+		  return json_obj;
+	  }
 
-	return json_obj;
+	  if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+		  wallet = WalletClient.GetWalletByStorage(password);
+		  if (wallet == null) {
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "No backup found!");
+			  return json_obj;
+		  }
+	  }
+	  ECKey ecKey = wallet.getEcKey();
+	  byte[] privKeyPlain = ecKey.getPrivKeyBytes();
+	  String priKey = ByteArray.toHexString(privKeyPlain);
+
+	  json_obj.put("result", SUCCESS);
+	  json_obj.put("privAddress", priKey);
+	  json_obj.put("pubAddress",WalletClient.encode58Check(wallet.getAddress()));
+	  json_obj.put("password", password);
+	  json_obj.put("accountName", wallet.getAccountName());
+
+	  return json_obj;
   }
 
   public JSONObject getAddress() {
-      JSONObject json_obj = new JSONObject();
+  	JSONObject json_obj = new JSONObject();
 	if (wallet == null || !wallet.isLoginState()) {
 	  logger.warn("Warning: GetAddress failed,  Please login first !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "You need to login in first before accessing the wallet.");
+	  json_obj.put("result", FAILED);
+	  json_obj.put("reason", "Not logged in!");
 	  return json_obj;
 	}
 
@@ -342,6 +261,40 @@ public class TronClient {
 	json_obj.put("address", WalletClient.encode58Check(wallet.getAddress()));
 	return json_obj;
   }
+
+	public JSONObject validatePasscodeImport(String password, boolean tostore){
+		JSONObject json_obj = new JSONObject();
+
+		if (!WalletClient.passwordValid(password)) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Password invalid!");
+			return json_obj;
+		}
+
+		if (wallet == null) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Import unsuccessful!");
+			return json_obj;
+		}
+
+		if (!wallet.isPDirty()) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Cannot validate passcode!");
+			return json_obj;
+		}
+
+		if (!wallet.checkPassWordWithAccess(password)) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Wrong password!");
+			return json_obj;
+		}
+		json_obj.put("result", SUCCESS);
+
+		if (tostore){
+			wallet.store(password);
+		}
+		return json_obj;
+	}
 
   private Account queryAccount() {
 	if (wallet == null || !wallet.isLoginState()) {
@@ -360,184 +313,186 @@ public class TronClient {
 	  JSONObject json_obj = new JSONObject();
 	  Account account = queryAccount();
 	  if (account != null){
-	      json_obj.put("result", SUCCESS);
-	      json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-          json_obj.put("rawPubAddress", wallet.getRawAddress());
-		  json_obj.put("balance", account.getBalance());
-		  json_obj.put("accountName", new String(account.getAccountName().toByteArray(), Charset.forName("UTF-8")));
+		  json_obj.put("result", SUCCESS);
+		  json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
+		  json_obj.put("balance", account.getBalance() / DROP);
+
+		  JSONArray fjson_arr = new JSONArray();
+		  if (account.getFrozenCount() > 0) {
+			  for (Account.Frozen frozen : account.getFrozenList()) {
+			  	JSONObject fjson = new JSONObject();
+			  	fjson.put("frozenBalance", frozen.getFrozenBalance() / DROP);
+			  	Date date = new Date(frozen.getExpireTime());
+			  	fjson.put("expirationTime", date.toString());
+				  fjson_arr.add(fjson);
+			  }
+		  }
+
+		  json_obj.put("frozenBalance", fjson_arr);
+		  json_obj.put("accountName", wallet.getAccountName());
 		  json_obj.put("lastOperation", account.getLatestOprationTime());
+
+		  GrpcAPI.AccountNetMessage accmsg = WalletClient.getAccountNet(wallet.getAddress());
+
+		  long bandwidth_avail = accmsg.getNetLimit() - accmsg.getNetUsed();
+		  long free_bandwidth_avail = accmsg.getFreeNetLimit() - accmsg.getFreeNetUsed();
+		  json_obj.put("bandwidth", bandwidth_avail + free_bandwidth_avail);
 
 		  JSONArray json_arr = new JSONArray();
 
 		  if (account.getVotesCount() > 0){
-		  		for(Account.Vote vote_item: account.getVotesList()){
-		  			JSONObject vote_obj = new JSONObject();
-		  			vote_obj.put("address", WalletClient.encode58Check(vote_item.getVoteAddress().toByteArray()));
-		  			vote_obj.put("count", vote_item.getVoteCount());
-		  			json_arr.add(vote_obj);
+				for(Protocol.Vote vote_item: account.getVotesList()){
+					JSONObject vote_obj = new JSONObject();
+					vote_obj.put("voteAddress", WalletClient.encode58Check(vote_item.getVoteAddress().toByteArray()));
+					vote_obj.put("voteCount", vote_item.getVoteCount());
+					json_arr.add(vote_obj);
 				}
 		  }
 		  json_obj.put("votes",json_arr);
 	  }else{
-	      json_obj.put("result", FAILED);
-	      json_obj.put("reason", "Unable to fetch account details!");
-      }
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Account fetch failed!");
+	  }
 	  return json_obj;
 	}
 
-  public JSONObject sendCoin(String password, String toAddress, long amount) {
+  public JSONObject sendCoin(String toAddress, long amount) {
       JSONObject json_obj = new JSONObject();
 
 	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: SendCoin failed,  Please login first !!");
         json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to send currency. Please login in first.");
+        json_obj.put("reason", "Not logged in!");
         return json_obj;
 	}
-	if (!WalletClient.passwordValid(password)) {
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Password is invalid!");
-        return json_obj;
-	}
+
 	byte[] to = WalletClient.decodeFromBase58Check(toAddress);
 	if (to == null) {
         json_obj.put("result", FAILED);
-        json_obj.put("reason", "Recipient address is invalid!");
+        json_obj.put("reason", "Invalid recipient address");
         return json_obj;
 	}
 
 	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: SendCoin failed, Load wallet failed !!");
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Unable to send currency due to wallet load failure.");
-          return json_obj;
-	  }
+	  	json_obj.put("result", FAILED);
+	  	json_obj.put("reason", "Wallet init failed!");
+	  	return json_obj;
 	}
-
-	  Transaction res_tx = wallet.prepareTransaction(to, amount);
-	  if (res_tx == null){
-		  logger.warn("Warning: Couldn't prepare transaction");
-		  json_obj.put("result", FAILED);
-		  json_obj.put("reason", "Prepare transaction failed.");
-		  return json_obj;
-	  }else{
-	  	Transaction signed_tx = wallet.signTransaction(res_tx);
-	  	if (WalletClient.broadcastTransaction(signed_tx)){
-			saveTransaction(WalletClient.encode58Check(wallet.getAddress()), toAddress, amount ,
-					signed_tx.getRawData().getTimestamp());
-			json_obj.put("result", SUCCESS);
-		}else{
-			json_obj.put("result", FAILED);
-			json_obj.put("reason", "Broadcast transaction failed.");
-			return json_obj;
-		}
-
-	  }
-
+	System.out.println("SEND AMOUNT: " + amount);
+	System.out.println("SEND TO: " + toAddress);
+	  System.out.println("SEND TO BYTE: " + to);
+	  amount = amount * DROP;
+	boolean res_tx_bool = wallet.sendCoin(to,amount);
+	if (!res_tx_bool){
+		json_obj.put("result", FAILED);
+		json_obj.put("reason", "Send TRX failed!");
+	}else {
+		json_obj.put("result", SUCCESS);
+	}
 
     return json_obj;
   }
 
 
-  public JSONObject prepareTransaction(String password, String toAddress, long amount){
+  public JSONObject prepareTransaction(String toAddress, long amount){
       JSONObject json_obj = new JSONObject();
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: Create transaction failed,  Please login first !!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to create transaction. Please login in first.");
-	  return json_obj;
-	}
-	if (!WalletClient.passwordValid(password)) {
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Password is invalid!");
-	  return json_obj;
-	}
-	byte[] to = WalletClient.decodeFromBase58Check(toAddress);
-	if (to == null) {
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Recipient address is invalid!");
-	  return json_obj;
-	}
-
-
-	Transaction res_tx = wallet.prepareTransaction(to, amount);
-	if (res_tx == null){
-	  logger.warn("Warning: Couldn't prepare transaction");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Prepare transaction failed.");
-	}else{
-	  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
-
-	  try{
-		  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-	  }catch (IOException e) {
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Transaction write failed: " + e.getMessage());
+	  if (wallet == null || !wallet.isLoginState()) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Unable to create transaction. Please login in first.");
 		  return json_obj;
 	  }
 
-	  if (res_tx.hasRawData()){
-	      json_obj.put("data", ByteUtil.toHexString(data_bytes));
-		json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
-		json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
-		json_obj.put("from", getAddress().get("address"));
-		json_obj.put("to", toAddress);
-		json_obj.put("amount", amount);
-
-		  JSONArray json_sigs = new JSONArray();
-		  for(ByteString bs : res_tx.getSignatureList()){
-			  json_sigs.add(Hex.toHexString(bs.toByteArray()));
-		  }
-		  json_obj.put("signatures", json_sigs);
-
-
-		String result = "";
-		long totalfee = 0;
-
-		for (Transaction.Result r : res_tx.getRetList()){
-			totalfee += r.getFee();
-			if (r.getRetValue() == 1){
-				result = FAILED;
-			}else if (r.getRetValue() != 0 && !result.equals(FAILED)){
-				result = "pending";
-			}
-		}
-		if (result.equals("")) result = SUCCESS;
-
-		json_obj.put("fee", totalfee);
-		json_obj.put("result", result);
-		json_obj.put("txhash", TransactionUtils.getHash(res_tx));
-	  }else{
-		json_obj.put("result", FAILED);
-		json_obj.put("reason", "Created transaction does not have raw data.");
+	  byte[] to = WalletClient.decodeFromBase58Check(toAddress);
+	  if (to == null) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Recipient address is invalid!");
+		  return json_obj;
 	  }
-	}
+
+
+	  Transaction res_tx = wallet.prepareTransaction(to, amount);
+	  if (res_tx == null){
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Prepare transaction failed.");
+	  }else{
+		  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
+
+		  try{
+			  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
+		  }catch (IOException e) {
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Transaction write failed: " + e.getMessage());
+			  return json_obj;
+		  }
+
+		  if (res_tx.hasRawData()){
+			  json_obj.put("data", ByteUtil.toHexString(data_bytes));
+			  json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
+			  json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
+			  json_obj.put("from", WalletClient.encode58Check(wallet.getAddress()));
+			  json_obj.put("to", toAddress);
+			  json_obj.put("amount", amount);
+
+			  JSONArray json_sigs = new JSONArray();
+			  for(ByteString bs : res_tx.getSignatureList()){
+				  json_sigs.add(Hex.toHexString(bs.toByteArray()));
+			  }
+			  json_obj.put("signatures", json_sigs);
+
+
+			  String result = "";
+			  long totalfee = 0;
+
+			  for (Transaction.Result r : res_tx.getRetList()){
+				  totalfee += r.getFee();
+				  if (r.getRetValue() == 1){
+					  result = FAILED;
+				  }else if (r.getRetValue() != 0 && !result.equals(FAILED)){
+					  result = "pending";
+				  }
+			  }
+			  if (result.equals("")) result = SUCCESS;
+
+			  json_obj.put("fee", totalfee);
+			  json_obj.put("result", SUCCESS);
+			  json_obj.put("status", result);
+			  json_obj.put("txhash", ByteUtil.toHexString(TransactionUtils.getHash(res_tx)));
+		  }else{
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Raw data not found!");
+		  }
+	  }
 
 	return json_obj;
   }
 
-  public JSONObject getSignTxInfo(String hextx) {
-      JSONObject json_obj = new JSONObject();
+  public static JSONObject getSignTxInfo(String hextx) {
+	  JSONObject json_obj = new JSONObject();
 
 	  byte[] tx_byte = Hex.decode(hextx);
 	  Transaction transaction;
 	  try{
 		  transaction = Transaction.parseFrom(tx_byte);
 	  }catch(InvalidProtocolBufferException e){
-	      json_obj.put("result", FAILED);
-	      json_obj.put("reason", "Unable to parse transaction: " + e.getMessage());
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Unable to parse transaction: " + e.getMessage());
 		  return json_obj;
 	  }
 
-
 	  if (transaction.hasRawData()){
-		  json_obj.put("timestamp", transaction.getRawData().getTimestamp());
-		  json_obj.put("refblocknum", transaction.getRawData().getRefBlockNum());
 
-		  Transaction.Contract contract =  transaction.getRawData().getContract(0);
 		  try{
+			  long timestamp = transaction.getRawData().getTimestamp();
+			  if (timestamp == 0){
+				  json_obj.put("timestamp", "");
+			  }else{
+				  Date date = new Date(timestamp);
+				  SimpleDateFormat df = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss zzz");
+				  json_obj.put("timestamp", df.format(date));
+			  }
+
+			  json_obj.put("refblocknum", transaction.getRawData().getRefBlockNum());
+
+			  Transaction.Contract contract =  transaction.getRawData().getContract(0);
 			  final Contract.TransferContract transferContract = contract.getParameter().
 					  unpack(Contract.TransferContract.class);
 			  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
@@ -551,9 +506,9 @@ public class TronClient {
 			  json_obj.put("amount", amount);
 
 		  }catch(InvalidProtocolBufferException e){
-              json_obj.put("result", FAILED);
-              json_obj.put("reason", "Unable to fetch transaction contract details.");
-              return json_obj;
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Unable to fetch transaction contract details.");
+			  return json_obj;
 		  }
 
 		  JSONArray json_sigs = new JSONArray();
@@ -577,124 +532,18 @@ public class TronClient {
 		  if (result.equals("")) result = SUCCESS;
 
 		  json_obj.put("fee", totalfee);
-
-		  json_obj.put("result", result);
-		  json_obj.put("txhash", TransactionUtils.getHash(transaction));
+		  json_obj.put("data", hextx);
+		  json_obj.put("result", SUCCESS);
+		  json_obj.put("status", result);
+		  json_obj.put("txhash", ByteUtil.toHexString(TransactionUtils.getHash(transaction)));
 	  }else{
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Imported transaction does not have raw data.");
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Imported transaction does not have raw data.");
 	  }
 
 	  return json_obj;
   }
 
-  public JSONObject signTransaction(String password, String hextx) {
-      JSONObject json_obj = new JSONObject();
-
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: Sign transaction failed, Please login first!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to sign transaction. Please login in first.");
-	  return json_obj;
-	}
-	if (!WalletClient.passwordValid(password)) {
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Password is invalid!");
-        return json_obj;
-	}
-
-	if (hextx == null){
-	  logger.warn("Warning: Transaction is null, nothing to sign!");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Transaction is null, nothing to sign!");
-        return json_obj;
-	}
-
-	byte[] tx_byte = Hex.decode(hextx);
-	Transaction transaction;
-	try{
-		transaction = Transaction.parseFrom(tx_byte);
-	}catch(InvalidProtocolBufferException e){
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Transaction parsing failed: " + e.getMessage());
-        return json_obj;
-	}
-
-	Transaction res_tx = wallet.signTransaction(transaction);
-
-	if (res_tx == null){
-	  logger.warn("Warning: Couldn't sign transaction");
-        json_obj.put("result", FAILED);
-        json_obj.put("reason", "Could not sign transaction.");
-        return json_obj;
-	}else{
-	   
-	  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
-	  try{
-		  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-	  }catch (IOException e){
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Signed transaction write failed: " + e.getMessage());
-          return json_obj;
-	  }
-
-
-	  if (res_tx.hasRawData()){
-          json_obj.put("data", ByteUtil.toHexString(data_bytes));
-		json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
-		json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
-
-		Transaction.Contract contract =  res_tx.getRawData().getContract(0);
-		try{
-			final Contract.TransferContract transferContract = contract.getParameter().
-					unpack(Contract.TransferContract.class);
-			final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
-			final String addressHex = WalletClient.encode58Check(addressBytes);
-			final byte[] toAddressBytes = transferContract.getToAddress().toByteArray();
-			final String toAddressHex = WalletClient.encode58Check(toAddressBytes);
-			final long amount = transferContract.getAmount();
-
-			json_obj.put("from", addressHex);
-			json_obj.put("to", toAddressHex);
-			json_obj.put("amount", amount);
-
-		}catch(InvalidProtocolBufferException e){
-            json_obj.put("result", FAILED);
-            json_obj.put("reason", "Unable to fetch transaction contract details: " + e.getMessage());
-            return json_obj;
-		}
-
-		JSONArray json_sigs = new JSONArray();
-		for(ByteString bs : res_tx.getSignatureList()){
-			json_sigs.add(Hex.toHexString(bs.toByteArray()));
-		}
-		json_obj.put("signatures", json_sigs);
-
-		String result = "";
-		long totalfee = 0;
-
-		for (Transaction.Result r : res_tx.getRetList()){
-			totalfee += r.getFee();
-			if (r.getRetValue() == 1){
-				result = FAILED;
-			}else if (r.getRetValue() != 0 && !result.equals(FAILED)){
-				result = "pending";
-			}
-		}
-		if (result.equals("")) result = SUCCESS;
-
-		json_obj.put("fee", totalfee);
-
-		json_obj.put("result", result);
-		json_obj.put("txhash", TransactionUtils.getHash(res_tx));
-	  }else{
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Imported transaction does not have raw data.");
-	  }
-	}
-
-	return json_obj;
-  }
 
   public JSONObject broadcastTransaction(String hextx){
 	byte[] tx_byte = Hex.decode(hextx);
@@ -720,21 +569,20 @@ public class TronClient {
 
 		}catch(InvalidProtocolBufferException e){
             json_obj.put("result", FAILED);
-            json_obj.put("reason", "Unable to fetch transaction contract details: " + e.getMessage());
+            json_obj.put("reason", "Fetch transaction failed!");
             return json_obj;
 		}
 	}catch (InvalidProtocolBufferException e){
         json_obj.put("result", FAILED);
-        json_obj.put("reason", "Unable to parse transaction: " + e.getMessage());
+        json_obj.put("reason", "Parse transaction failed!");
         return json_obj;
 	}
 
 
 	boolean res = WalletClient.broadcastTransaction(transaction);
 	if (!res){
-	  logger.warn("Warning: Broadcast transaction failed!");
 	  json_obj.put("result", FAILED);
-	  json_obj.put("reason", "Broadcasting transaction failed!");
+	  json_obj.put("reason", "Broadcast transaction failed!");
 	}else{
 	  json_obj.put("result", SUCCESS);
 		String publi_addr = String.valueOf(json_obj.get("from"));
@@ -742,217 +590,99 @@ public class TronClient {
 		long amount = Long.parseLong(String.valueOf(json_obj.get("amount")));
 
 		saveTransaction(publi_addr, to_addr, amount , transaction.getRawData().getTimestamp());
-
 	}
 
 	return json_obj;
   }
 
 
-  private void saveTransaction(String from, String to, long amount, long timestamp){
+  private synchronized void saveTransaction(String from, String to, long amount, long timestamp){
+	  String file_encrypt = getFileEncryptData();
 
-	  HashMap<String,String> curr_tx_map = new HashMap<>();
-	  curr_tx_map.put("from", from);
-	  curr_tx_map.put("to", to);
-	  curr_tx_map.put("amount", String.valueOf(amount));
-	  curr_tx_map.put("timestamp", String.valueOf(timestamp));
+	  if (file_encrypt != null && !file_encrypt.equals("")) {
+		  JSONObject json_obj = encryption.decryptObject(file_encrypt);
+
+		  JSONObject curr_map = new JSONObject();
+		  curr_map.put("from", from);
+		  curr_map.put("to", to);
+		  curr_map.put("amount", String.valueOf(amount));
+
+		  Date date = new Date(timestamp);
+		  SimpleDateFormat df = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss zzz");
+		  curr_map.put("timestamp", df.format(date));
 
 
-	  if (tx_map.containsKey(from)){
-		  ArrayList<HashMap<String,String>> list = tx_map.get(from);
-		  list.add(curr_tx_map);
-		  Collections.sort(list, new TxComp("timestamp"));
-		  tx_map.put(from, list);
-	  }else {
-		  ArrayList<HashMap<String, String>> list = new ArrayList<>();
-		  list.add(curr_tx_map);
-		  tx_map.put(from, list);
+		  if (json_obj.containsKey(from)){
+			  JSONObject inner_obj = (JSONObject) json_obj.get(from);
+			  JSONArray json_arr;
+			  if (inner_obj.containsKey("txs")){
+				  json_arr = (JSONArray) inner_obj.get("txs");
+			  	  json_arr.add(0, curr_map);
+			  }else{
+			  	  json_arr = new JSONArray();
+				  json_arr.add(curr_map);
+			  }
+
+			  inner_obj.put("txs", json_arr);
+			  json_obj.put(from, inner_obj);
+		  }else {
+			  JSONObject inner_obj = new JSONObject();
+			  JSONArray json_arr = new JSONArray();
+			  json_arr.add(curr_map);
+			  inner_obj.put("txs", json_arr);
+			  json_obj.put(from, inner_obj);
+		  }
+
+		  if (json_obj.containsKey(to)){
+			  JSONObject inner_obj = (JSONObject) json_obj.get(to);
+			  JSONArray json_arr;
+			  if (inner_obj.containsKey("txs")){
+				  json_arr = (JSONArray) inner_obj.get("txs");
+				  json_arr.add(0, curr_map);
+			  }else{
+				  json_arr = new JSONArray();
+				  json_arr.add(curr_map);
+			  }
+
+			  inner_obj.put("txs", json_arr);
+			  json_obj.put(to, inner_obj);
+		  }else {
+			  JSONObject inner_obj = new JSONObject();
+			  JSONArray json_arr = new JSONArray();
+			  json_arr.add(curr_map);
+			  inner_obj.put("txs", json_arr);
+			  json_obj.put(to, inner_obj);
+
+		  }
+		  String encrypted_data = encryption.encryptObject(json_obj);
+		  writeEncryptData(encrypted_data.getBytes());
 	  }
-
-	  if (tx_map.containsKey(to)){
-		  ArrayList<HashMap<String,String>> list = tx_map.get(to);
-		  list.add(curr_tx_map);
-		  Collections.sort(list, new TxComp("timestamp"));
-		  tx_map.put(to, list);
-	  }else {
-		  ArrayList<HashMap<String, String>> list = new ArrayList<>();
-		  list.add(curr_tx_map);
-		  tx_map.put(to, list);
-	  }
-
-	  try{
-		  FileOutputStream fos = new FileOutputStream("wallettx");
-		  ObjectOutputStream outstream = new ObjectOutputStream(fos);
-		  outstream.writeObject(tx_map);
-		  outstream.close();
-		  fos.close();
-	  }catch(IOException e){}
-
   }
 
-  public JSONObject getTransactions(String publicAddress){
+  public JSONObject getTransactions(String pubAddress){
 	  JSONObject json_obj = new JSONObject();
+	  String file_encrypt = getFileEncryptData();
 
-	  try{
-	  	  //make sure data is consistent
-		  FileInputStream fis = new FileInputStream("wallettx");
-		  ObjectInputStream instream = new ObjectInputStream(fis);
-		  HashMap<String, ArrayList<HashMap<String,String>>> imap = (HashMap) instream.readObject();
-		  instream.close();
-		  fis.close();
-
+	  if (file_encrypt != null && !file_encrypt.equals("")) {
+		  JSONObject enc_json_obj = encryption.decryptObject(file_encrypt);
 		  JSONArray json_array = new JSONArray();
 
-		  if (imap.containsKey(publicAddress)){
-			  for (HashMap<String,String> map: imap.get(publicAddress)){
-				  JSONObject obj = new JSONObject();
-				  obj.putAll(map);
-
-				  long milli = Long.parseLong((String)obj.get("timestamp"));
-				  Date date = new Date(milli);
-				  SimpleDateFormat df = new SimpleDateFormat("yyyy/MM/dd HH:mm zzz");
-				  obj.put("timestamp", df.format(date));
-
-				  json_array.add(obj);
+		  if (enc_json_obj.containsKey(pubAddress)){
+			  JSONObject inner_obj = (JSONObject) enc_json_obj.get(pubAddress);
+			  if (inner_obj.containsKey("txs")){
+			  	json_array = (JSONArray) inner_obj.get("txs");
 			  }
 		  }
 
 		  json_obj.put("result" ,SUCCESS);
-		  json_obj.put("transactions", json_array);
-	  }catch(Exception e){
-	  		json_obj.put("result", "failed");
-	  		json_obj.put("reason", "Unable to fetch transactions: " + e.getMessage());
+		  json_obj.put("txs", json_array);
+	  }else{
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Transaction fetch failed!");
 	  }
-
 	  return json_obj;
   }
 
-  public boolean transferAsset(String password, String toAddress, String assertName, long amount) {
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: TransferAsset failed,  Please login first !!");
-	  return false;
-	}
-	if (!WalletClient.passwordValid(password)) {
-	  return false;
-	}
-	byte[] to = WalletClient.decodeFromBase58Check(toAddress);
-	if (to == null) {
-	  return false;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: TransferAsset failed, Load wallet failed !!");
-		return false;
-	  }
-	}
-
-	return wallet.transferAsset(to, assertName.getBytes(), amount);
-  }
-
-  public boolean participateAssetIssue(String password, String toAddress, String assertName,
-	  long amount) {
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: TransferAsset failed,  Please login first !!");
-	  return false;
-	}
-	if (!WalletClient.passwordValid(password)) {
-	  return false;
-	}
-	byte[] to = WalletClient.decodeFromBase58Check(toAddress);
-	if (to == null) {
-	  return false;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: TransferAsset failed, Load wallet failed !!");
-		return false;
-	  }
-	}
-
-	return wallet.participateAssetIssue(to, assertName.getBytes(), amount);
-  }
-
-  public boolean assetIssue(String password, String name, long totalSupply, int trxNum, int icoNum,
-	  long startTime, long endTime, int decayRatio, int voteScore, String description, String url) {
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: assetIssue failed,  Please login first !!");
-	  return false;
-	}
-	if (!WalletClient.passwordValid(password)) {
-	  return false;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: assetIssue failed, Load wallet failed !!");
-		return false;
-	  }
-	}
-
-	try {
-	  Contract.AssetIssueContract.Builder builder = Contract.AssetIssueContract.newBuilder();
-	  builder.setOwnerAddress(ByteString.copyFrom(wallet.getAddress()));
-	  builder.setName(ByteString.copyFrom(name.getBytes()));
-	  if (totalSupply <= 0) {
-		return false;
-	  }
-	  builder.setTotalSupply(totalSupply);
-	  if (trxNum <= 0) {
-		return false;
-	  }
-	  builder.setTrxNum(trxNum);
-	  if (icoNum <= 0) {
-		return false;
-	  }
-	  builder.setNum(icoNum);
-	  long now = System.currentTimeMillis();
-	  if (startTime <= now) {
-		return false;
-	  }
-	  if (endTime <= startTime) {
-		return false;
-	  }
-	  builder.setStartTime(startTime);
-	  builder.setEndTime(endTime);
-	  builder.setDecayRatio(decayRatio);
-	  builder.setVoteScore(voteScore);
-	  builder.setDescription(ByteString.copyFrom(description.getBytes()));
-	  builder.setUrl(ByteString.copyFrom(url.getBytes()));
-
-	  return wallet.createAssetIssue(builder.build());
-	} catch (Exception ex) {
-	  return false;
-	}
-  }
-
-  public boolean createWitness(String password, String url) {
-	if (wallet == null || !wallet.isLoginState()) {
-	  logger.warn("Warning: createWitness failed,  Please login first !!");
-	  return false;
-	}
-	if (!WalletClient.passwordValid(password)) {
-	  return false;
-	}
-
-	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		logger.warn("Warning: createWitness failed, Load wallet failed !!");
-		return false;
-	  }
-	}
-
-	try {
-	  return wallet.createWitness(url.getBytes());
-	} catch (Exception ex) {
-	  return false;
-	}
-  }
 
   private static JSONObject parseBlock(Block block){
 	  JSONObject json_obj = new JSONObject();
@@ -998,26 +728,88 @@ public class TronClient {
   	return parseBlock(block);
   }
 
-  public JSONObject getBlock(int blockNum) {
+  public static JSONObject getBlock(int blockNum) {
 
       Block block =  WalletClient.GetBlock(blockNum);
       return parseBlock(block);
-
-     /* byte[] data_bytes = new byte[block.getSerializedSize()];
-
-      try{
-          block.writeTo(CodedOutputStream.newInstance(data_bytes));
-          json_obj.put("blockNum", block.getBlockHeader().getRawData().getNumber());
-          json_obj.put("blockData", block.);
-          json_obj.put("result", SUCCESS);
-      }catch (IOException e) {
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Failed to get bytes of block: " + e.getMessage());
-      }*/
-
   }
 
-  public JSONObject voteWitness(String password, HashMap<String, String> witness) {
+  public JSONObject prepareVoteWitness(HashMap<String, String> witness){
+	  JSONObject json_obj = new JSONObject();
+
+	  if (wallet == null || !wallet.isLoginState()) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Please login first");
+		  return json_obj;
+	  }
+
+	  if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Failed to load wallet!");
+		  return json_obj;
+	  }
+
+	  try {
+		  Transaction res_tx = wallet.prepareVoteWitness(witness);
+		  if (res_tx != null){
+			  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
+
+			  try{
+				  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
+			  }catch (IOException e) {
+				  json_obj.put("result", FAILED);
+				  json_obj.put("reason", "Transaction write failed!");
+				  return json_obj;
+			  }
+
+			  if (res_tx.hasRawData()){
+				  json_obj.put("data", ByteUtil.toHexString(data_bytes));
+				  json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
+				  json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
+				  json_obj.put("from", WalletClient.encode58Check(wallet.getAddress()));
+
+				  JSONArray json_sigs = new JSONArray();
+				  for(ByteString bs : res_tx.getSignatureList()){
+					  json_sigs.add(Hex.toHexString(bs.toByteArray()));
+				  }
+				  json_obj.put("signatures", json_sigs);
+
+				  String result = "";
+				  long totalfee = 0;
+
+				  for (Transaction.Result r : res_tx.getRetList()){
+					  totalfee += r.getFee();
+					  if (r.getRetValue() == 1){
+						  result = FAILED;
+					  }else if (r.getRetValue() != 0 && !result.equals(FAILED)){
+						  result = "pending";
+					  }
+				  }
+				  if (result.equals("")) result = SUCCESS;
+
+				  json_obj.put("fee", totalfee);
+				  json_obj.put("result", SUCCESS);
+				  json_obj.put("status", result);
+				  json_obj.put("txhash", ByteUtil.toHexString(TransactionUtils.getHash(res_tx)));
+			  }else{
+				  json_obj.put("result", FAILED);
+				  json_obj.put("reason", "Raw data not found!");
+			  }
+
+		  }else{
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Create contract failed!");
+		  }
+	  }catch (Exception ex) {
+		  json_obj.put("result", FAILED);
+		  json_obj.put("reason", "Unknown error");
+	  }
+
+	  return json_obj;
+  }
+
+
+  public JSONObject voteWitness(HashMap<String, String> witness) {
   	JSONObject json_obj = new JSONObject();
 
 	if (wallet == null || !wallet.isLoginState()) {
@@ -1025,19 +817,10 @@ public class TronClient {
 		json_obj.put("reason", "Please login first");
 	  	return json_obj;
 	}
-	if (!WalletClient.passwordValid(password)) {
-		json_obj.put("result", FAILED);
-		json_obj.put("reason", "Password is not valid");
-	  	return json_obj;
-	}
 
 	if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-		  json_obj.put("result", FAILED);
-		  json_obj.put("reason", "Failed to load wallet. It's not initialized");
-		  return json_obj;
-	  }
+		json_obj.put("result", FAILED);
+		json_obj.put("reason", "Failed to load wallet!");
 	}
 
 	try {
@@ -1046,38 +829,220 @@ public class TronClient {
 			json_obj.put("result", SUCCESS);
 		}else{
 			json_obj.put("result", FAILED);
-			json_obj.put("reason", "Failed to vote for witness");
+			json_obj.put("reason", "Failed to vote!");
 		}
 	}catch (Exception ex) {
 	  	json_obj.put("result", FAILED);
-	  	json_obj.put("reason", "Failed to vote for witness: " + ex.getMessage());
+	  	json_obj.put("reason", "Unknown error");
 	}
 
 	return json_obj;
   }
 
-  public JSONObject listAccounts() {
-      JSONObject json_obj = new JSONObject();
-	try {
-        JSONArray json_array = new JSONArray();
-        AccountList acclist = WalletClient.listAccounts().get();
-        List<Account> list = acclist.getAccountsList();
-        for(Account account: list){
-            JSONObject json_acc = new JSONObject();
-            json_acc.put("accountName", account.getAccountName().toStringUtf8());
-            json_acc.put("address", WalletClient.encode58Check(account.getAddress().toByteArray()));
-            json_acc.put("balance", account.getBalance());
-            json_acc.put("type", account.getType());
-            json_array.add(json_acc);
-        }
-        json_obj.put("result", SUCCESS);
-        json_obj.put("accounts",json_array);
-	} catch (Exception e) {
-	    json_obj.put("result", FAILED);
-	    json_obj.put("reason", "Unable to get all accounts: " + e.getMessage());
+	public JSONObject prepareFreezeBalance(long frozen_balance, long frozen_duration) {
+		JSONObject json_obj = new JSONObject();
+		if (wallet == null || !wallet.isLoginState()) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Please login first");
+			return json_obj;
+		}
+
+		if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Failed to load wallet!");
+			return json_obj;
+		}
+
+		try {
+			Transaction res_tx = wallet.prepareFreezeBalance(frozen_balance, frozen_duration);
+			if (res_tx != null){
+				byte[] data_bytes = new byte[res_tx.getSerializedSize()];
+
+				try{
+					res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
+				}catch (IOException e) {
+					json_obj.put("result", FAILED);
+					json_obj.put("reason", "Transaction write failed!");
+					return json_obj;
+				}
+
+				if (res_tx.hasRawData()){
+					json_obj.put("data", ByteUtil.toHexString(data_bytes));
+					json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
+					json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
+					json_obj.put("from", WalletClient.encode58Check(wallet.getAddress()));
+
+					JSONArray json_sigs = new JSONArray();
+					for(ByteString bs : res_tx.getSignatureList()){
+						json_sigs.add(Hex.toHexString(bs.toByteArray()));
+					}
+					json_obj.put("signatures", json_sigs);
+
+					String result = "";
+					long totalfee = 0;
+
+					for (Transaction.Result r : res_tx.getRetList()){
+						totalfee += r.getFee();
+						if (r.getRetValue() == 1){
+							result = FAILED;
+						}else if (r.getRetValue() != 0 && !result.equals(FAILED)){
+							result = "pending";
+						}
+					}
+					if (result.equals("")) result = SUCCESS;
+
+					json_obj.put("fee", totalfee);
+					json_obj.put("result", SUCCESS);
+					json_obj.put("status", result);
+					json_obj.put("txhash", ByteUtil.toHexString(TransactionUtils.getHash(res_tx)));
+				}else{
+					json_obj.put("result", FAILED);
+					json_obj.put("reason", "Raw data not found!");
+				}
+
+			}else{
+				json_obj.put("result", FAILED);
+				json_obj.put("reason", "Create contract failed!");
+			}
+		} catch (Exception ex) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Freeze failed!");
+		}
+		return json_obj;
 	}
-	return json_obj;
-  }
+
+
+	public JSONObject freezeBalance(long frozen_balance, long frozen_duration) {
+		JSONObject json_obj = new JSONObject();
+		if (wallet == null || !wallet.isLoginState()) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Please login first");
+			return json_obj;
+		}
+
+		if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Failed to load wallet");
+			return json_obj;
+		}
+
+		try {
+			frozen_balance = frozen_balance * DROP;
+			System.out.println("FREEZING: " + frozen_balance + " FOR: " + frozen_duration);
+			boolean res_tx_bool = wallet.freezeBalance(frozen_balance, frozen_duration);
+			if (!res_tx_bool){
+				json_obj.put("result", FAILED);
+				json_obj.put("reason", "Freeze TRX failed!");
+			}else {
+				json_obj.put("result", SUCCESS);
+			}
+		} catch (Exception ex) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Freeze failed!");
+		}
+		return json_obj;
+	}
+
+	public JSONObject unfreezeBalance() {
+		JSONObject json_obj = new JSONObject();
+		if (wallet == null || !wallet.isLoginState()) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Please login first");
+			return json_obj;
+		}
+
+		if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Failed to load wallet");
+			return json_obj;
+		}
+
+		try {
+			boolean res_tx_bool =  wallet.unfreezeBalance();
+			if (!res_tx_bool){
+				json_obj.put("result", FAILED);
+				json_obj.put("reason", "Unfreeze TRX failed!");
+			}else {
+				json_obj.put("result", SUCCESS);
+			}
+		} catch (Exception ex) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Unfreeze failed!");
+		}
+		return json_obj;
+	}
+
+	public JSONObject prepareUnfreezeBalance() {
+		JSONObject json_obj = new JSONObject();
+		if (wallet == null || !wallet.isLoginState()) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Please login first");
+			return json_obj;
+		}
+
+		if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Failed to load wallet!");
+			return json_obj;
+		}
+
+		try {
+			Transaction res_tx =  wallet.prepareUnfreezeBalance();
+			if (res_tx != null){
+				byte[] data_bytes = new byte[res_tx.getSerializedSize()];
+
+				try{
+					res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
+				}catch (IOException e) {
+					json_obj.put("result", FAILED);
+					json_obj.put("reason", "Transaction write failed!");
+					return json_obj;
+				}
+
+				if (res_tx.hasRawData()){
+					json_obj.put("data", ByteUtil.toHexString(data_bytes));
+					json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
+					json_obj.put("refblocknum", res_tx.getRawData().getRefBlockNum());
+					json_obj.put("from", WalletClient.encode58Check(wallet.getAddress()));
+
+					JSONArray json_sigs = new JSONArray();
+					for(ByteString bs : res_tx.getSignatureList()){
+						json_sigs.add(Hex.toHexString(bs.toByteArray()));
+					}
+					json_obj.put("signatures", json_sigs);
+
+					String result = "";
+					long totalfee = 0;
+
+					for (Transaction.Result r : res_tx.getRetList()){
+						totalfee += r.getFee();
+						if (r.getRetValue() == 1){
+							result = FAILED;
+						}else if (r.getRetValue() != 0 && !result.equals(FAILED)){
+							result = "pending";
+						}
+					}
+					if (result.equals("")) result = SUCCESS;
+
+					json_obj.put("fee", totalfee);
+					json_obj.put("result", SUCCESS);
+					json_obj.put("status", result);
+					json_obj.put("txhash", ByteUtil.toHexString(TransactionUtils.getHash(res_tx)));
+				}else{
+					json_obj.put("result", FAILED);
+					json_obj.put("reason", "Raw data not found!");
+				}
+
+			}else{
+				json_obj.put("result", FAILED);
+				json_obj.put("reason", "Create contract failed!");
+			}
+		} catch (Exception ex) {
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Unfreeze failed!");
+		}
+		return json_obj;
+	}
 
   public JSONObject listWitnesses() {
   	JSONObject json_obj = new JSONObject();
@@ -1116,15 +1081,8 @@ public class TronClient {
 	return json_obj;
   }
 
-  public Optional<AssetIssueList> getAssetIssueList() {
-	try {
-	  return WalletClient.getAssetIssueList();
-	} catch (Exception ex) {
-	  return Optional.empty();
-	}
-  }
 
-  public JSONObject listNodes() {
+  public static JSONObject listNodes() {
       JSONObject json_obj = new JSONObject();
 	try {
         JSONArray json_array = new JSONArray();
@@ -1150,9 +1108,29 @@ public class TronClient {
 	return WalletClient.getTotalTransaction();
   }
 
+	private static String getFileEncryptData(){
+		try {
+			File file = new File("access");
+			FileInputStream fs = new FileInputStream(file);
+			byte[] str = new byte[(int) file.length()];
+			fs.read(str);
+			fs.close();
+			return new String(str);
+		}catch (Exception e){}
+		return new String();
+	}
+
+	private void writeEncryptData(byte[] bytes){
+		try{
+			File file = new File("access");
+			FileOutputStream fos = new FileOutputStream(file);
+			fos.write(bytes);
+			fos.close();
+		}catch(IOException e){}
+	}
 
   /***********Additional App Features ***************/
-  private JSONObject readJSONFromURL(String url){
+  private static JSONObject readJSONFromURL(String url){
 	  try{
 		  String jsonstr = IOUtils.toString(new URL(url), "utf-8");
 		  JSONObject json_obj = (JSONObject) JSONValue.parseWithException(jsonstr);
@@ -1165,7 +1143,7 @@ public class TronClient {
 	  return null;
   }
 
-  private JSONArray readArrayFromURL(String url){
+  private static JSONArray readArrayFromURL(String url){
 	  try{
 		  String jsonstr = IOUtils.toString(new URL(url), "utf-8");
 		  JSONArray json_obj = (JSONArray) JSONValue.parseWithException(jsonstr);
@@ -1178,7 +1156,7 @@ public class TronClient {
 	  return null;
   }
 
-  public JSONObject getTronPrice(){
+  public static JSONObject getTronPrice(){
 	  class TrxPrice implements Runnable {
 		  private volatile float price;
 
@@ -1211,7 +1189,7 @@ public class TronClient {
 	  try{
 		  thread.join();
 	  }catch(InterruptedException e){
-		  logger.warn("Can't get TRX price: " + e.getMessage());
+		  System.out.println("Can't get TRX price: " + e.getMessage());
 	  }
 	  JSONObject json_obj = new JSONObject();
 	  json_obj.put("trxPrice", trxprice.getPrice());
@@ -1286,6 +1264,19 @@ public class TronClient {
   }
 
 
+  public JSONObject connectNode(String node){
+	  JSONObject json_obj = new JSONObject();
+	  boolean res = WalletClient.connectNewGrpcIP(node);
+	  if (res){
+	  	json_obj.put("result",SUCCESS);
+	  }else{
+	  	json_obj.put("result", FAILED);
+	  	json_obj.put("reason", "Connect to node failed!");
+	  }
+
+	  return json_obj;
+  }
+
   public static void addToQueue(ItemBaggage itemBaggage){
   	  priorityQueue.offer(itemBaggage);
   }
@@ -1334,7 +1325,7 @@ public class TronClient {
 
 		  public Pair<Integer,Long> call() {
 			  try{
-				  GrpcClient grpc = new GrpcClient(fullnodelist.get(this.ipIdx));
+				  GrpcClient grpc = new GrpcClient(fullnodelist.get(this.ipIdx), "");
 				  System.out.println("Created client for node: " + fullnodelist.get(this.ipIdx) + " INDEX: " + this.ipIdx);
 				  JSONObject json_obj = getBlockWithCustomGrpc(-1, grpc);
 				  System.out.println("Got JSON result from node: " + json_obj);
@@ -1365,9 +1356,9 @@ public class TronClient {
 						res_obj.put("fullnode", currnode);
 						baggage.addToQueue(res_obj);
 					} else {
-						//String node = fullnodelist.get(++ip_idx % fullnodelist.size());
-						//WalletClient.connectNewGrpcIP(node);
-						//Thread.sleep(500);
+						String node = fullnodelist.get(++ip_idx % fullnodelist.size());
+						WalletClient.connectNewGrpcIP(node);
+						Thread.sleep(500);
 						priorityQueue.offer(baggage);
 
 						/*

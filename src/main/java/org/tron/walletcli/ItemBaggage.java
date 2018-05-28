@@ -49,6 +49,7 @@ public class ItemBaggage implements Comparable<ItemBaggage>{
         try {
             res_obj = (JSONObject) method.invoke(instance_obj, args);
         }catch(Exception e){
+            e.printStackTrace();
             System.out.println("invokeMethod exception: " + e.getLocalizedMessage());
             res_obj = new JSONObject();
             res_obj.put("result", TronClient.FAILED);

@@ -71,6 +71,15 @@ public class GrpcClient {
     }
   }
 
+  public void shutdownNow() throws InterruptedException{
+    if (channelFull != null) {
+      channelFull.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+    }
+    if (channelSolidity != null) {
+      channelSolidity.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+    }
+  }
+
   public Account queryAccount(byte[] address) {
     ByteString addressBS = ByteString.copyFrom(address);
     Account request = Account.newBuilder().setAddress(addressBS).build();
@@ -140,6 +149,8 @@ public class GrpcClient {
     while (response.getResult() == false && response.getCode() == response_code.SERVER_BUSY
         && i > 0) {
       i--;
+      System.out.println("GRPC response result: " + (response.getResult() == false));
+      System.out.println("server busy: " + (response.getCode() == response_code.SERVER_BUSY));
       response = blockingStubFull.broadcastTransaction(signaturedTransaction);
       logger.info("Code = " + response.getCode());
       logger.info("Message = " + response.getMessage().toStringUtf8());

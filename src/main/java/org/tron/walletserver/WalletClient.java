@@ -1,11 +1,13 @@
 package org.tron.walletserver;
 
+import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigObject;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.json.simple.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.util.encoders.Hex;
@@ -37,16 +39,13 @@ import org.tron.protos.Protocol.Account;
 import org.tron.protos.Protocol.Block;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.Witness;
+import org.tron.walletcli.Encryption;
 import sun.security.jca.JCAUtil;
 
+import java.io.*;
 import java.math.BigInteger;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.nio.charset.Charset;
+import java.util.*;
 
 class AccountComparator implements Comparator {
 
@@ -69,10 +68,22 @@ public class WalletClient {
   private ECKey ecKey = null;
   private boolean loginState = false;
 
+  private static String fullnode = "";
   private static GrpcClient rpcCli = init();
   private static String dbPath;
   private static String txtPath;
+  private byte[] watchOnlyRawAddress = null;
+  private String API_KEY = "";
+  private String SECRET_KEY = "";
+  private Encryption encryption;
 
+  {
+    try{
+      InputStream inputStream = getClass().getResourceAsStream("/tronks.ks");
+      String data = FileUtil.readFromInputStream(inputStream);
+      encryption = new Encryption(data.trim());
+    }catch (Exception e){}
+  }
 //  static {
 //    new Timer().schedule(new TimerTask() {
 //      @Override
@@ -97,6 +108,7 @@ public class WalletClient {
     }
     if (config.hasPath("fullnode.ip.list")) {
       fullNode = config.getStringList("fullnode.ip.list").get(0);
+      WalletClient.fullnode = fullNode;
     }
     return new GrpcClient(fullNode, solidityNode);
   }
@@ -161,6 +173,7 @@ public class WalletClient {
     }
     this.ecKey = temKey;
   }
+
 
   public boolean login(String password) {
     loginState = checkPassWord(password);
@@ -250,11 +263,34 @@ public class WalletClient {
     return queryAccount(getAddress());
   }
 
+
+  public String getPrivateKey() {
+    byte[] privKeyPlain = ecKey.getPrivKeyBytes();
+    return ByteArray.toHexString(privKeyPlain);
+  }
+
+  public synchronized static boolean connectNewGrpcIP(String node){
+    try{
+      /*rpcCli.shutdownNow();
+      rpcCli  = new GrpcClient(node, "");
+      WalletClient.fullnode = node;*/
+    }catch (Exception e){
+      return false;
+    }
+    System.out.println("setting new node: " + node);
+    return true;
+  }
+
+  public static String getCurrFullNode(){
+    System.out.println("getting curr node: " + WalletClient.fullnode);
+    return WalletClient.fullnode;
+  }
+
   public static Account queryAccount(byte[] address) {
     return rpcCli.queryAccount(address);//call rpc
   }
 
-  private Transaction signTransaction(Transaction transaction) {
+  public Transaction signTransaction(Transaction transaction) {
     if (this.ecKey == null || this.ecKey.getPrivKey() == null) {
       logger.warn("Warning: Can't sign,there is no private key !!");
       return null;
@@ -263,19 +299,147 @@ public class WalletClient {
     return TransactionUtils.sign(transaction, this.ecKey);
   }
 
+  public boolean isPDirty(){
+    String file_encrypt = getFileEncryptData();
+
+    if (file_encrypt != null && !file_encrypt.equals("")) {
+      JSONObject json_obj = encryption.decryptObject(file_encrypt);
+      String pubAddress = encode58Check(getAddress());
+
+      if (json_obj.containsKey(pubAddress)) {
+        JSONObject inner_obj = (JSONObject)json_obj.get(pubAddress);
+        if (inner_obj.containsKey("pwd")){
+          String p = (String) inner_obj.get("pwd");
+          if (p != null && !p.equals("") && passwordValid(p)){
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  public void setPDirty(String p){
+    String file_encrypt = getFileEncryptData();
+    JSONObject inner_obj = new JSONObject();
+    JSONObject json_obj = new JSONObject();
+
+    if (file_encrypt != null && !file_encrypt.equals("")) {
+      json_obj = encryption.decryptObject(file_encrypt);
+      String pubAddress = encode58Check(getAddress());
+
+      if (json_obj.containsKey(pubAddress)) {
+        inner_obj = (JSONObject)json_obj.get(pubAddress);
+      }
+    }
+    inner_obj.put("pwd",p);
+    json_obj.put(encode58Check(getAddress()), inner_obj);
+
+    String encrypted_str = encryption.encryptObject(json_obj);
+    writeEncryptData(encrypted_str.getBytes());
+  }
+
+  public String getAccountName(){
+    String file_encrypt = getFileEncryptData();
+    String res_str = new String();
+
+    if (file_encrypt != null && !file_encrypt.equals("")){
+      JSONObject json_obj = encryption.decryptObject(file_encrypt);
+      String pubAddress = encode58Check(getAddress());
+
+      if (json_obj.containsKey(pubAddress)){
+        JSONObject inner_obj = (JSONObject) json_obj.get(pubAddress);
+        if (inner_obj.containsKey("accountName")){
+          res_str = (String) inner_obj.get("accountName");
+        }
+      }
+    }
+
+    return res_str;
+  }
+
+  public void setAccountName(String accName){
+    JSONObject json_obj = encryption.decryptObject(getFileEncryptData());
+    String pubAddress = encode58Check(getAddress());
+    JSONObject inner_obj = new JSONObject();
+    if (json_obj.containsKey(pubAddress)){
+      inner_obj = (JSONObject) json_obj.get(pubAddress);
+    }
+    inner_obj.put("accountName", accName);
+    json_obj.put(pubAddress, inner_obj);
+
+    String encrypted_str = encryption.encryptObject(json_obj);
+    writeEncryptData(encrypted_str.getBytes());
+  }
+
+  public boolean checkPassWordWithAccess(String pass){
+    String file_encrypt = getFileEncryptData();
+
+    if (file_encrypt != null && !file_encrypt.equals("")) {
+      JSONObject json_obj = encryption.decryptObject(file_encrypt);
+      String pubAddress = encode58Check(getAddress());
+
+      if (json_obj.containsKey(pubAddress)) {
+        JSONObject inner_obj = (JSONObject)json_obj.get(pubAddress);
+        if (inner_obj.containsKey("pwd")) {
+          String p = (String) inner_obj.get("pwd");
+          if (p != null && !p.equals("") && passwordValid(p) && p.equals(pass)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  private static String getFileEncryptData(){
+    try {
+      File file = new File("access");
+      FileInputStream fs = new FileInputStream(file);
+      byte[] str = new byte[(int) file.length()];
+      fs.read(str);
+      fs.close();
+      return new String(str);
+    }catch (Exception e){}
+    return new String();
+  }
+
+  private synchronized void writeEncryptData(byte[] bytes){
+    try{
+      File file = new File("access");
+      FileOutputStream fos = new FileOutputStream(file);
+      fos.write(bytes);
+      fos.close();
+    }catch(IOException e){}
+  }
+
   public boolean sendCoin(byte[] to, long amount) {
     byte[] owner = getAddress();
     Contract.TransferContract contract = createTransferContract(to, owner, amount);
     Transaction transaction = rpcCli.createTransaction(contract);
     if (transaction == null || transaction.getRawData().getContractCount() == 0) {
+      System.out.println("transaction is null: " + (transaction == null));
+      System.out.println("zero contract count: " + (transaction.getRawData().getContractCount() == 0));
       return false;
     }
     transaction = signTransaction(transaction);
+    System.out.println("transaction signed: " + transaction.getSignatureList().size());
     System.out.println("--------------------------------");
     System.out.println(
         "txid = " + ByteArray.toHexString(Hash.sha256(transaction.getRawData().toByteArray())));
     System.out.println("--------------------------------");
     return rpcCli.broadcastTransaction(transaction);
+  }
+
+  public Transaction prepareTransaction(byte[] to, long amount) {
+    byte[] owner = getAddress();
+    Contract.TransferContract contract = createTransferContract(to, owner, amount);
+    Transaction transaction = rpcCli.createTransaction(contract);
+    if (transaction == null || transaction.getRawData().getContractCount() == 0) {
+      return null;
+    }
+    return transaction;
   }
 
   public boolean updateAccount(byte[] accountNameBytes) {
@@ -352,6 +516,13 @@ public class WalletClient {
         && rpcCli.broadcastTransaction(transaction);
   }
 
+  public static boolean broadcastTransaction(Transaction transaction){
+    if (transaction == null || false == TransactionUtils.validTransaction(transaction)){
+      return false;
+    }
+    return rpcCli.broadcastTransaction(transaction);
+  }
+
   public boolean createAssetIssue(Contract.AssetIssueContract contract) {
     Transaction transaction = rpcCli.createAssetIssue(contract);
     if (transaction == null || transaction.getRawData().getContractCount() == 0) {
@@ -414,6 +585,16 @@ public class WalletClient {
     }
     transaction = signTransaction(transaction);
     return rpcCli.broadcastTransaction(transaction);
+  }
+
+  public Transaction prepareVoteWitness(HashMap<String, String> witness) {
+    byte[] owner = getAddress();
+    Contract.VoteWitnessContract contract = createVoteWitnessContract(owner, witness);
+    Transaction transaction = rpcCli.voteWitnessAccount(contract);
+    if (transaction == null || transaction.getRawData().getContractCount() == 0) {
+      return null;
+    }
+    return transaction;
   }
 
   public static Contract.TransferContract createTransferContract(byte[] to, byte[] owner,
@@ -608,6 +789,34 @@ public class WalletClient {
       byte[] pubKey = loadPubKey(); //04 PubKey
       ECKey eccKey = ECKey.fromPublicOnly(pubKey);
       return new WalletClient(eccKey);
+    } catch (Exception ex) {
+      ex.printStackTrace();
+      return null;
+    }
+  }
+
+  public void initWatchOnlyRawAddress(byte[] raw_address){
+    if (raw_address != null){
+      watchOnlyRawAddress = raw_address;
+    }
+  }
+
+  public boolean isWatchOnly(){
+    return watchOnlyRawAddress != null;
+  }
+
+  public static WalletClient GetWalletIgnorPrivKey(String pubAddress) {
+    try {
+      if (pubAddress == null || "".equals(pubAddress)){
+        return null;
+      }
+
+      byte[] raw_address = decode58Check(pubAddress);
+      //we will use grpc directly instead of wallet client
+      WalletClient walletClient =  new WalletClient(true);
+      walletClient.initWatchOnlyRawAddress(raw_address);
+      return walletClient;
+
     } catch (Exception ex) {
       ex.printStackTrace();
       return null;
@@ -843,6 +1052,16 @@ public class WalletClient {
     return rpcCli.getTransactionById(txID);
   }
 
+  public Transaction prepareFreezeBalance(long frozen_balance, long frozen_duration) {
+    Contract.FreezeBalanceContract contract = createFreezeBalanceContract(frozen_balance,
+            frozen_duration);
+    Transaction transaction = rpcCli.createTransaction(contract);
+    if (transaction == null || transaction.getRawData().getContractCount() == 0) {
+      return null;
+    }
+    return transaction;
+  }
+
   public boolean freezeBalance(long frozen_balance, long frozen_duration) {
     Contract.FreezeBalanceContract contract = createFreezeBalanceContract(frozen_balance,
         frozen_duration);
@@ -863,6 +1082,15 @@ public class WalletClient {
         .setFrozenDuration(frozen_duration);
 
     return builder.build();
+  }
+
+  public Transaction prepareUnfreezeBalance() {
+    Contract.UnfreezeBalanceContract contract = createUnfreezeBalanceContract();
+    Transaction transaction = rpcCli.createTransaction(contract);
+    if (transaction == null || transaction.getRawData().getContractCount() == 0) {
+      return null;
+    }
+    return transaction;
   }
 
   public boolean unfreezeBalance() {
@@ -934,5 +1162,22 @@ public class WalletClient {
 
   public static Optional<BlockList> getBlockByLatestNum(long num) {
     return rpcCli.getBlockByLatestNum(num);
+  }
+
+  public void setAPIKeys(String apikey, String secretkey){
+    if (apikey != null && secretkey != null){
+      API_KEY = apikey;
+      SECRET_KEY = secretkey;
+    }else{
+      logger.warn("Warning: Couldn't set API Keys");
+    }
+  }
+
+  public String getApiKey(){
+    return API_KEY;
+  }
+
+  public String getSecretKey(){
+    return SECRET_KEY;
   }
 }
