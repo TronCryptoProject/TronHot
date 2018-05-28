@@ -53,12 +53,10 @@ public class TronClientAPI {
                                                 new Object[]{password, accountName},
                                                 tronClient,
                                                 ItemPriority.HIGH);
-        //if (json_obj.containsKey("result") && json_obj.get("result") == SUCCESS){
-            tronClient.login(password);
-            sessionMap.put(tronClient.getAddress().get("address").toString(), tronClient);
-       // }
+        tronClient.login(password);
+        sessionMap.put(tronClient.getAddress().get("address").toString(), tronClient);
+
         return encryption.encryptObject(json_obj);
-        //return json_obj;
     }
 
     @RequestMapping(value="/createPaperWallet", method=RequestMethod.POST)
@@ -243,18 +241,20 @@ public class TronClientAPI {
     public String queryAccountSocket(String jsonMessage){
         JSONParser parser = new JSONParser();
         JSONObject json_obj;
-        try{
-            json_obj = (JSONObject)parser.parse(encryption.decryptText(jsonMessage));
-            boolean is_watch = Boolean.parseBoolean((String)json_obj.get("isWatch"));
-            String pub_add = (String)json_obj.get("pubAddress");
-            String res = getAccountInfo(pub_add, is_watch);
-            System.out.println("ACCRES: " + res);
-            return res;
+        if (!jsonMessage.equals("")){
+            try{
+                json_obj = (JSONObject)parser.parse(encryption.decryptText(jsonMessage));
+                boolean is_watch = Boolean.parseBoolean((String)json_obj.get("isWatch"));
+                String pub_add = (String)json_obj.get("pubAddress");
+                String res = getAccountInfo(pub_add, is_watch);
+                System.out.println("ACCRES: " + res);
+                return res;
 
-        }catch (Exception e){
-            e.printStackTrace();
+            }catch (Exception e){
+                e.printStackTrace();
+            }
         }
-        return new String();
+        return encryption.encryptObject(new JSONObject());
     }
 
     @RequestMapping(value="/accountInfo/{pubAddress}", method=RequestMethod.GET)
@@ -474,6 +474,26 @@ public class TronClientAPI {
     public String getTransactions(@PathVariable("pubAddress") String pubAddress){
         pubAddress = encryption.decryptText(pubAddress);
         return encryption.encryptObject(globalTronClient.getTransactions(pubAddress));
+    }
+
+    @MessageMapping("/txs")
+    @SendTo("/persist/txs")
+    public String getTransactionsSocket(String pubAddress){
+        try{
+            pubAddress = encryption.decryptText(pubAddress);
+            System.out.println("TXSPUBADDRESS: " + pubAddress);
+            JSONObject json_obj = getResultFromQueue("getTransactionsSocket",
+                    new Class[]{String.class},
+                    new Object[]{pubAddress},
+                    globalTronClient,
+                    ItemPriority.HIGH);
+            return encryption.encryptObject(json_obj);
+
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+        return encryption.encryptObject(new JSONObject());
+
     }
 
     @RequestMapping(value="/block/{blockNum}", method=RequestMethod.GET)

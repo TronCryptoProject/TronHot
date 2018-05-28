@@ -7,7 +7,6 @@ import com.binance.api.client.domain.account.NewOrderResponse;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.sun.tools.corba.se.idl.InterfaceGen;
 import com.typesafe.config.Config;
 import javafx.util.Pair;
 import org.json.simple.JSONArray;
@@ -46,16 +45,16 @@ import java.util.concurrent.*;
 import static org.tron.common.crypto.Hash.sha256;
 
 
-class TxComp implements Comparator<Map<String,String>>{
+class TxComp implements Comparator<JSONObject>{
 	private String compkey;
 	public TxComp(String compkey){
 		this.compkey = compkey;
 	}
-	public int compare(Map<String,String> map1 ,Map<String,String> map2){
+	public int compare(JSONObject map1 ,JSONObject map2){
 		if (map1.containsKey(compkey) && map2.containsKey(compkey)){
-			String val1 = map1.get(compkey);
-			String val2 = map2.get(compkey);
-			return val1.compareTo(val2);
+			String val1 = (String) map1.get(compkey);
+			String val2 = (String) map2.get(compkey);
+			return -1 * val1.compareTo(val2);
 		}
 		return -1;
 	}
@@ -210,26 +209,30 @@ public class TronClient {
 		  json_obj.put("reason", "Not logged in!");
 		  return json_obj;
 	  }
-	  if (!WalletClient.passwordValid(password)) {
-		  json_obj.put("result", FAILED);
-		  json_obj.put("reason", "Invalid password!");
-		  return json_obj;
-	  }
 
-	  if (!WalletClient.checkPassWord(password)) {
-		  json_obj.put("result", FAILED);
-		  json_obj.put("reason", "Wrong password!");
-		  return json_obj;
-	  }
-
-	  if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
-		  wallet = WalletClient.GetWalletByStorage(password);
-		  if (wallet == null) {
+	  if (wallet.isPDirty()){
+		  if (!WalletClient.passwordValid(password)) {
 			  json_obj.put("result", FAILED);
-			  json_obj.put("reason", "No backup found!");
+			  json_obj.put("reason", "Invalid password!");
 			  return json_obj;
 		  }
+
+		  if (!WalletClient.checkPassWord(password)) {
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Wrong password!");
+			  return json_obj;
+		  }
+		  if (wallet.getEcKey() == null || wallet.getEcKey().getPrivKey() == null) {
+			  wallet = WalletClient.GetWalletByStorage(password);
+			  if (wallet == null) {
+				  json_obj.put("result", FAILED);
+				  json_obj.put("reason", "No backup found!");
+				  return json_obj;
+			  }
+		  }
 	  }
+
+
 	  ECKey ecKey = wallet.getEcKey();
 	  byte[] privKeyPlain = ecKey.getPrivKeyBytes();
 	  String priKey = ByteArray.toHexString(privKeyPlain);
@@ -315,13 +318,13 @@ public class TronClient {
 	  if (account != null){
 		  json_obj.put("result", SUCCESS);
 		  json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
-		  json_obj.put("balance", account.getBalance() / DROP);
+		  json_obj.put("balance", ((double)account.getBalance() / DROP));
 
 		  JSONArray fjson_arr = new JSONArray();
 		  if (account.getFrozenCount() > 0) {
 			  for (Account.Frozen frozen : account.getFrozenList()) {
 			  	JSONObject fjson = new JSONObject();
-			  	fjson.put("frozenBalance", frozen.getFrozenBalance() / DROP);
+			  	fjson.put("frozenBalance", ((double)frozen.getFrozenBalance() / DROP));
 			  	Date date = new Date(frozen.getExpireTime());
 			  	fjson.put("expirationTime", date.toString());
 				  fjson_arr.add(fjson);
@@ -658,6 +661,29 @@ public class TronClient {
 		  writeEncryptData(encrypted_data.getBytes());
 	  }
   }
+
+  public JSONObject getTransactionsSocket(String pubAddress){
+	  JSONObject json_obj = new JSONObject();
+
+	  byte[] addressBytes = WalletClient.decodeFromBase58Check(pubAddress);
+	  if (addressBytes == null) {
+	  		json_obj.put("result", FAILED);
+	  		json_obj.put("reason", "Address invalid!");
+		  	return json_obj;
+	  }
+
+	  TxThread txThread = new TxThread(addressBytes);
+	  json_obj = txThread.getTransactions();
+
+	  if (json_obj.containsKey("result") && json_obj.get("result") == SUCCESS){
+		  JSONArray res_arr = (JSONArray) json_obj.get("txs");
+		  Collections.sort(res_arr, new TxComp("timestamp"));
+		  json_obj.put("txs", res_arr);
+	  }
+
+	  return json_obj;
+  }
+
 
   public JSONObject getTransactions(String pubAddress){
 	  JSONObject json_obj = new JSONObject();
