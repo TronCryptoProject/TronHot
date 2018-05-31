@@ -9,6 +9,7 @@ import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.typesafe.config.Config;
 import javafx.util.Pair;
+import org.apache.commons.lang3.ArrayUtils;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
@@ -69,22 +70,30 @@ public class TronClient {
   public static final long DROP = 1000000;
   private static Config config = Configuration.getByPath("config.conf");
   private static List<String> fullnodelist = config.getStringList("fullnode.ip.list");
-  private static BlockingQueue<ItemBaggage> priorityQueue = new PriorityBlockingQueue<ItemBaggage>();
-	static int ip_idx = 0;
-	private Encryption encryption;
+  private static List<String> soliditynodelist = config.getStringList("soliditynode.ip.list");
+  private BlockingQueue<ItemBaggage> priorityQueue = new PriorityBlockingQueue<ItemBaggage>();
+  private int ip_idx = 0;
+  private Encryption encryption;
+  private String banditNode = null;
 
 	{
 		try{
 			InputStream inputStream = getClass().getResourceAsStream("/tronks.ks");
 			String data = FileUtil.readFromInputStream(inputStream);
 			encryption = new Encryption(data.trim());
-		}catch (Exception e){}
+			runDaemonThread();
+		}catch (Exception e){
+			e.printStackTrace();
+		}
 	}
 
+	public TronClient(){}
 
-	static {
-  	runDaemonThread();
-  }
+	public TronClient(Boolean initWallet){
+		if (initWallet){
+			wallet = new WalletClient(true); //priv key will not be used
+		}
+	}
 
   public JSONObject registerWallet(String password, String accountName) {
 	  JSONObject json_obj = new JSONObject();
@@ -152,6 +161,7 @@ public class TronClient {
 	    json_obj.put("result", FAILED);
         json_obj.put("reason", "Public address not valid!");
 	}else{
+		wallet.login("******");
         json_obj.put("result", SUCCESS);
         json_obj.put("accountName", wallet.getAccountName());
         json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
@@ -169,12 +179,17 @@ public class TronClient {
 	  return json_obj;
 	}
 	if (wallet == null) {
-	  wallet = WalletClient.GetWalletByStorage(password);
-	  if (wallet == null) {
-          json_obj.put("result", FAILED);
-          json_obj.put("reason", "Wallet not found");
-          return json_obj;
-	  }
+		if (wallet.isWatchOnly()){
+			json_obj.put("result", FAILED);
+			json_obj.put("reason", "Wallet not found");
+			return json_obj;
+		}
+		  wallet = WalletClient.GetWalletByStorage(password);
+		  if (wallet == null) {
+			  json_obj.put("result", FAILED);
+			  json_obj.put("reason", "Wallet not found");
+			  return json_obj;
+		  }
 	}
 
 	if (wallet.login(password)){
@@ -197,6 +212,7 @@ public class TronClient {
         json_obj.put("result", FAILED);
         json_obj.put("reason", "Logout failed!");
     }
+    priorityQueue.clear();
     return json_obj;
   }
 
@@ -335,7 +351,7 @@ public class TronClient {
 		  json_obj.put("accountName", wallet.getAccountName());
 		  json_obj.put("lastOperation", account.getLatestOprationTime());
 
-		  GrpcAPI.AccountNetMessage accmsg = WalletClient.getAccountNet(wallet.getAddress());
+		  GrpcAPI.AccountNetMessage accmsg = wallet.getAccountNet(wallet.getAddress());
 
 		  long bandwidth_avail = accmsg.getNetLimit() - accmsg.getNetUsed();
 		  long free_bandwidth_avail = accmsg.getFreeNetLimit() - accmsg.getFreeNetUsed();
@@ -385,6 +401,7 @@ public class TronClient {
 	  System.out.println("SEND TO BYTE: " + to);
 	  amount = amount * DROP;
 	boolean res_tx_bool = wallet.sendCoin(to,amount);
+
 	if (!res_tx_bool){
 		json_obj.put("result", FAILED);
 		json_obj.put("reason", "Send TRX failed!");
@@ -417,16 +434,8 @@ public class TronClient {
 		  json_obj.put("result", FAILED);
 		  json_obj.put("reason", "Prepare transaction failed.");
 	  }else{
-		  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
 
-		  try{
-			  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-		  }catch (IOException e) {
-			  json_obj.put("result", FAILED);
-			  json_obj.put("reason", "Transaction write failed: " + e.getMessage());
-			  return json_obj;
-		  }
-
+		  byte[] data_bytes = res_tx.toByteArray();
 		  if (res_tx.hasRawData()){
 			  json_obj.put("data", ByteUtil.toHexString(data_bytes));
 			  json_obj.put("timestamp", res_tx.getRawData().getTimestamp());
@@ -496,17 +505,55 @@ public class TronClient {
 			  json_obj.put("refblocknum", transaction.getRawData().getRefBlockNum());
 
 			  Transaction.Contract contract =  transaction.getRawData().getContract(0);
-			  final Contract.TransferContract transferContract = contract.getParameter().
-					  unpack(Contract.TransferContract.class);
-			  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
-			  final String addressHex = WalletClient.encode58Check(addressBytes);
-			  final byte[] toAddressBytes = transferContract.getToAddress().toByteArray();
-			  final String toAddressHex = WalletClient.encode58Check(toAddressBytes);
-			  final long amount = transferContract.getAmount();
 
-			  json_obj.put("from", addressHex);
-			  json_obj.put("to", toAddressHex);
-			  json_obj.put("amount", amount);
+
+
+
+
+
+			  String type = "";
+			  if (contract.getType() == Transaction.Contract.ContractType.VoteWitnessContract){
+			  	type = "VoteWitnessContract";
+				  final Contract.VoteWitnessContract transferContract = contract.getParameter().
+						  unpack(Contract.VoteWitnessContract.class);
+				  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
+				  final String addressHex = WalletClient.encode58Check(addressBytes);
+				  json_obj.put("from", addressHex);
+				  json_obj.put("to", "Witness Contract");
+				  json_obj.put("amount", transferContract.getVotesCount());
+			  }else if (contract.getType() == Transaction.Contract.ContractType.TransferContract){
+			  	type = "TransferContract";
+				  final Contract.TransferContract transferContract = contract.getParameter().
+						  unpack(Contract.TransferContract.class);
+				  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
+				  final String addressHex = WalletClient.encode58Check(addressBytes);
+				  final byte[] toAddressBytes = transferContract.getToAddress().toByteArray();
+				  final String toAddressHex = WalletClient.encode58Check(toAddressBytes);
+				  final long amount = transferContract.getAmount();
+				  json_obj.put("from", addressHex);
+				  json_obj.put("to", toAddressHex);
+				  json_obj.put("amount", amount);
+
+			  }else if (contract.getType() == Transaction.Contract.ContractType.FreezeBalanceContract){
+			  	type = "FreezeBalanceContract";
+				  final Contract.FreezeBalanceContract transferContract = contract.getParameter().
+						  unpack(Contract.FreezeBalanceContract.class);
+				  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
+				  final String addressHex = WalletClient.encode58Check(addressBytes);
+				  json_obj.put("from", addressHex);
+				  json_obj.put("to", "Freeze Balance Contract");
+				  json_obj.put("amount", transferContract.getFrozenBalance());
+			  }else if (contract.getType() == Transaction.Contract.ContractType.UnfreezeBalanceContract){
+			  	type = "UnfreezeBalanceContract";
+				  final Contract.UnfreezeBalanceContract transferContract = contract.getParameter().
+						  unpack(Contract.UnfreezeBalanceContract.class);
+				  final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
+				  final String addressHex = WalletClient.encode58Check(addressBytes);
+				  json_obj.put("from", addressHex);
+				  json_obj.put("to", "Unfreeze Balance Contract");
+				  json_obj.put("amount", "ALL");
+			  }
+			  json_obj.put("contractType", type);
 
 		  }catch(InvalidProtocolBufferException e){
 			  json_obj.put("result", FAILED);
@@ -555,44 +602,19 @@ public class TronClient {
 
 	try{
 		transaction = Transaction.parseFrom(tx_byte);
-
-		Transaction.Contract contract =  transaction.getRawData().getContract(0);
-		try{
-			final Contract.TransferContract transferContract = contract.getParameter().
-					unpack(Contract.TransferContract.class);
-			final byte[] addressBytes = transferContract.getOwnerAddress().toByteArray();
-			final String addressHex = WalletClient.encode58Check(addressBytes);
-			final byte[] toAddressBytes = transferContract.getToAddress().toByteArray();
-			final String toAddressHex = WalletClient.encode58Check(toAddressBytes);
-			final long amount = transferContract.getAmount();
-
-			json_obj.put("from", addressHex);
-			json_obj.put("to", toAddressHex);
-			json_obj.put("amount", amount);
-
-		}catch(InvalidProtocolBufferException e){
-            json_obj.put("result", FAILED);
-            json_obj.put("reason", "Fetch transaction failed!");
-            return json_obj;
-		}
 	}catch (InvalidProtocolBufferException e){
         json_obj.put("result", FAILED);
         json_obj.put("reason", "Parse transaction failed!");
         return json_obj;
 	}
 
-
-	boolean res = WalletClient.broadcastTransaction(transaction);
+	boolean res = wallet.broadcastTransaction(transaction);
 	if (!res){
 	  json_obj.put("result", FAILED);
+	  json_obj.put("pubAddress", WalletClient.encode58Check(wallet.getAddress()));
 	  json_obj.put("reason", "Broadcast transaction failed!");
 	}else{
 	  json_obj.put("result", SUCCESS);
-		String publi_addr = String.valueOf(json_obj.get("from"));
-		String to_addr = String.valueOf(json_obj.get("to"));
-		long amount = Long.parseLong(String.valueOf(json_obj.get("amount")));
-
-		saveTransaction(publi_addr, to_addr, amount , transaction.getRawData().getTimestamp());
 	}
 
 	return json_obj;
@@ -672,7 +694,7 @@ public class TronClient {
 		  	return json_obj;
 	  }
 
-	  TxThread txThread = new TxThread(addressBytes);
+	  TxThread txThread = new TxThread(addressBytes, wallet);
 	  json_obj = txThread.getTransactions();
 
 	  if (json_obj.containsKey("result") && json_obj.get("result") == SUCCESS){
@@ -680,7 +702,7 @@ public class TronClient {
 		  Collections.sort(res_arr, new TxComp("timestamp"));
 		  json_obj.put("txs", res_arr);
 	  }
-
+		System.out.println("SENDING TXS: " + json_obj);
 	  return json_obj;
   }
 
@@ -754,9 +776,8 @@ public class TronClient {
   	return parseBlock(block);
   }
 
-  public static JSONObject getBlock(int blockNum) {
-
-      Block block =  WalletClient.GetBlock(blockNum);
+  public JSONObject getBlock(int blockNum) {
+      Block block =  wallet.GetBlock(blockNum);
       return parseBlock(block);
   }
 
@@ -778,15 +799,8 @@ public class TronClient {
 	  try {
 		  Transaction res_tx = wallet.prepareVoteWitness(witness);
 		  if (res_tx != null){
-			  byte[] data_bytes = new byte[res_tx.getSerializedSize()];
 
-			  try{
-				  res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-			  }catch (IOException e) {
-				  json_obj.put("result", FAILED);
-				  json_obj.put("reason", "Transaction write failed!");
-				  return json_obj;
-			  }
+			  byte[] data_bytes = res_tx.toByteArray();
 
 			  if (res_tx.hasRawData()){
 				  json_obj.put("data", ByteUtil.toHexString(data_bytes));
@@ -882,15 +896,8 @@ public class TronClient {
 		try {
 			Transaction res_tx = wallet.prepareFreezeBalance(frozen_balance, frozen_duration);
 			if (res_tx != null){
-				byte[] data_bytes = new byte[res_tx.getSerializedSize()];
 
-				try{
-					res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-				}catch (IOException e) {
-					json_obj.put("result", FAILED);
-					json_obj.put("reason", "Transaction write failed!");
-					return json_obj;
-				}
+				byte[] data_bytes = res_tx.toByteArray();
 
 				if (res_tx.hasRawData()){
 					json_obj.put("data", ByteUtil.toHexString(data_bytes));
@@ -1015,15 +1022,8 @@ public class TronClient {
 		try {
 			Transaction res_tx =  wallet.prepareUnfreezeBalance();
 			if (res_tx != null){
-				byte[] data_bytes = new byte[res_tx.getSerializedSize()];
 
-				try{
-					res_tx.writeTo(CodedOutputStream.newInstance(data_bytes));
-				}catch (IOException e) {
-					json_obj.put("result", FAILED);
-					json_obj.put("reason", "Transaction write failed!");
-					return json_obj;
-				}
+				byte[] data_bytes = res_tx.toByteArray();
 
 				if (res_tx.hasRawData()){
 					json_obj.put("data", ByteUtil.toHexString(data_bytes));
@@ -1074,7 +1074,7 @@ public class TronClient {
   	JSONObject json_obj = new JSONObject();
 
 	try {
-		Optional<WitnessList> result = WalletClient.listWitnesses();
+		Optional<WitnessList> result = wallet.listWitnesses();
 		if (result.isPresent()) {
 			WitnessList witness_list = result.get();
 			JSONArray json_arr = new JSONArray();
@@ -1108,11 +1108,11 @@ public class TronClient {
   }
 
 
-  public static JSONObject listNodes() {
+  public JSONObject listNodes() {
       JSONObject json_obj = new JSONObject();
 	try {
         JSONArray json_array = new JSONArray();
-        NodeList nodelist = WalletClient.listNodes().get();
+        NodeList nodelist = wallet.listNodes().get();
         List<Node> list = nodelist.getNodesList();
         for(Node node: list){
             JSONObject json_node = new JSONObject();
@@ -1130,9 +1130,6 @@ public class TronClient {
 	return json_obj;
   }
 
-  public GrpcAPI.NumberMessage getTotalTransaction() {
-	return WalletClient.getTotalTransaction();
-  }
 
 	private static String getFileEncryptData(){
 		try {
@@ -1188,16 +1185,17 @@ public class TronClient {
 
 		  @Override
 		  public void run() {
-			  String url = "https://api.binance.com/api/v1/ticker/price?symbol=TRXBTC";
+			  /*String url = "https://api.binance.com/api/v1/ticker/price?symbol=TRXBTC";
 			  JSONObject json_obj = readJSONFromURL(url);
 			  String price = String.valueOf(json_obj.get("price"));
-			  float price_btc = Float.parseFloat(price);
+			  float price_btc = Float.parseFloat(price);*/
 
-			  String btc_price_url = "https://api.coinmarketcap.com/v1/ticker/bitcoin/";
+			  String btc_price_url = "https://api.coinmarketcap.com/v1/ticker/tron/";
 			  JSONArray coinmarketcap_json_obj = readArrayFromURL(btc_price_url);
 			  String coinmarketcap_price = String.valueOf(((JSONObject) coinmarketcap_json_obj.get(0)).get("price_usd"));
 			  float coinmarketcap_price_float = Float.parseFloat(coinmarketcap_price);
-			  setPrice(coinmarketcap_price_float * price_btc);
+			  setPrice(coinmarketcap_price_float);
+			  //setPrice(coinmarketcap_price_float * price_btc);
 		  }
 
 		  private void setPrice(float value){
@@ -1289,12 +1287,20 @@ public class TronClient {
 	  return json_obj;
   }
 
-
+  //only for full nodes
   public JSONObject connectNode(String node){
 	  JSONObject json_obj = new JSONObject();
-	  boolean res = WalletClient.connectNewGrpcIP(node);
+	  boolean res = wallet.connectNewGrpcIP(node, soliditynodelist.get(0));
 	  if (res){
 	  	json_obj.put("result",SUCCESS);
+	  	int arrindex = ArrayUtils.indexOf(fullnodelist.toArray(), node);
+	  	System.out.println("FULLNODE LIST INDEX: " + arrindex);
+	  	if (arrindex != -1){
+	  		this.ip_idx = arrindex;
+	  		this.banditNode = null;
+		}else{
+	  		this.banditNode = node;
+		}
 	  }else{
 	  	json_obj.put("result", FAILED);
 	  	json_obj.put("reason", "Connect to node failed!");
@@ -1303,11 +1309,175 @@ public class TronClient {
 	  return json_obj;
   }
 
-  public static void addToQueue(ItemBaggage itemBaggage){
+  public void addToQueue(ItemBaggage itemBaggage){
   	  priorityQueue.offer(itemBaggage);
   }
 
-  private static JSONObject runMethod(ItemBaggage itemBaggage, long timeout){
+  public String getCurrNode(Boolean isSolidity){
+  	if (this.banditNode != null){
+  		return this.banditNode;
+	}
+  	if (isSolidity){
+  		return soliditynodelist.get(ip_idx);
+	}else{
+  		return fullnodelist.get(ip_idx);
+	}
+  }
+
+  private void roundRobinNode(Boolean isSolidity){
+  	  if (wallet != null){
+		  String node = "";
+		  if (isSolidity){
+			  node = soliditynodelist.get(++ip_idx % soliditynodelist.size());
+			  wallet.connectNewGrpcIP(fullnodelist.get(0),node);
+		  }else {
+			  node = fullnodelist.get(++ip_idx % fullnodelist.size());
+			  wallet.connectNewGrpcIP(node, soliditynodelist.get(0));
+		  }
+	  }
+  }
+
+  private void smartNodeAutoSelect(Boolean isSolidity, ItemBaggage baggage){
+	  ExecutorService executor;
+
+	  if (isSolidity){
+	  	  executor = Executors.newFixedThreadPool(soliditynodelist.size());
+	  }else{
+		  executor = Executors.newFixedThreadPool(fullnodelist.size());
+	  }
+
+	  CompletionService<Pair<Integer,Long>> comp_serv = new ExecutorCompletionService<>(executor);
+	  ArrayList<Future<Pair<Integer,Long>>> futures_arr = new ArrayList<>();
+	  ArrayList<Pair<Integer,Long>> latency_list = new ArrayList<>();
+	  boolean success = false;
+	  long timeout = 3000;
+
+	  try {
+		  for (int i = 0; i < (isSolidity ? soliditynodelist.size():fullnodelist.size()); i++) {
+			  IPCallback ipcallback = new IPCallback(i, isSolidity);
+			  Future<Pair<Integer,Long>> future = comp_serv.submit(ipcallback);
+			  futures_arr.add(future);
+		  }
+
+		  for (int x = 0; x < (isSolidity ? soliditynodelist.size():fullnodelist.size()); x++) {
+			  try {
+				  Future<Pair<Integer,Long>> f_pair = comp_serv.poll(timeout, TimeUnit.MILLISECONDS);
+				  if (f_pair == null){
+					  throw new TimeoutException("No more items to compute");
+				  }
+				  Pair<Integer,Long> res_pair = f_pair.get();
+				  int upperbound;
+				  if (isSolidity){
+				  	upperbound = (int) Math.floor(soliditynodelist.size() * 0.5);
+				  }else{
+				  	upperbound = (int) Math.floor(fullnodelist.size() * 0.3);
+				  }
+				  latency_list.add(res_pair);
+
+				  if (latency_list.size() >= upperbound){
+					  boolean dirty = false;
+					  for(Pair<Integer,Long> p: latency_list){
+						  Long blocknum = p.getValue();
+						  //check if the consensus agrees
+						  if (blocknum.longValue() != latency_list.get(0).getValue().longValue()){
+							  dirty = true;
+							  break;
+						  }
+					  }
+
+					  System.out.println("Dirty? " + dirty);
+
+					  if (!dirty && latency_list.get(0).getValue() != Long.MIN_VALUE){
+						  //pick the smallest latency node -- fastest
+						  System.out.println("inside");
+
+						  for(int i = 0; i < latency_list.size();i++){
+							  int ipidx = latency_list.get(i).getKey();
+							  String grpcnode = (isSolidity ? soliditynodelist.get(ipidx) : fullnodelist.get(ipidx));
+
+							  if (!getCurrNode(isSolidity).equals(grpcnode)) {
+								  boolean conn_res;
+								  if (isSolidity) {
+								  	  conn_res = wallet.connectNewGrpcIP(fullnodelist.get(0),grpcnode);
+								  }else{
+									  conn_res = wallet.connectNewGrpcIP(grpcnode,soliditynodelist.get(0));
+								  }
+								  if (!conn_res){
+									  continue;
+								  }else{
+									  success = true;
+									  this.ip_idx = ipidx;
+									  break; //connection success
+								  }
+							  }
+						  }
+
+						  if (success){
+							  break; //we are done
+						  }
+
+					  }//else wait for completion
+				  }
+
+			  } catch (ExecutionException e) {
+
+			  } catch (InterruptedException e) {
+
+			  } catch(TimeoutException e){
+				  System.out.println("Node timeout; no result came Retry: " + x);
+			  }
+		  }
+
+		  if (!success){
+			  System.out.println("Block array: " + Arrays.toString(latency_list.toArray()));
+
+			  //find the most synced block
+			  int maxidx = 0;
+			  Long maxval = Long.MIN_VALUE;
+			  for(int i = 0; i < latency_list.size(); i++){
+				  if (latency_list.get(i).getValue() > maxval){
+					  maxidx = latency_list.get(i).getKey();
+					  maxval = latency_list.get(i).getValue();
+				  }
+			  }
+
+			  String ip = (isSolidity ? soliditynodelist.get(maxidx) : fullnodelist.get(maxidx));
+
+			  System.out.println("Want to connect to " + ip);
+			  if (getCurrNode(isSolidity) != ip){
+				  System.out.println("About to connect to: " + ip);
+				  boolean con_res;
+				  if (isSolidity){
+					  con_res = wallet.connectNewGrpcIP(fullnodelist.get(0), ip);
+				  }else{
+					  con_res = wallet.connectNewGrpcIP(ip,soliditynodelist.get(0));
+				  }
+				  if (con_res){
+				  	this.ip_idx = maxidx;
+				  }
+			  }
+		  }
+
+		  addToQueue(baggage);
+
+	  }finally {
+		  System.out.println("Cancelling all futures");
+		  try {
+			  for (Future<Pair<Integer, Long>> future : futures_arr) {
+				  if (!future.isDone()){
+					  future.cancel(true);
+				  }
+
+			  }
+			  executor.shutdown();
+		  }catch (Exception e){
+			  System.out.println("Future cancelled: " + e.getMessage());
+		  }
+	  }
+
+  }
+
+  private JSONObject runMethod(ItemBaggage itemBaggage, long timeout){
   	Callable<JSONObject> calltask = new Callable<JSONObject>(){
   		@Override
 		public JSONObject call(){
@@ -1325,8 +1495,8 @@ public class TronClient {
 	  f = exec.submit(calltask);
 	  exec.shutdown();
 
-	  	return f.get(timeout, TimeUnit.MILLISECONDS);
-	  }catch (TimeoutException e){
+	  return f.get(timeout, TimeUnit.MILLISECONDS);
+  	}catch (TimeoutException e){
 	  	f.cancel(true);
 	  	System.out.println("Request timeout in runMethod");
 		  long endtime = System.nanoTime() - starttime;
@@ -1341,31 +1511,8 @@ public class TronClient {
   }
 
 
+  public void runDaemonThread(){
 
-  public static void runDaemonThread(){
-	  class IPCallback implements Callable<Pair<Integer,Long>> {
-		  private int ipIdx;
-		  IPCallback(int idx){
-			  this.ipIdx = idx;
-		  }
-
-		  public Pair<Integer,Long> call() {
-			  try{
-				  GrpcClient grpc = new GrpcClient(fullnodelist.get(this.ipIdx), "");
-				  System.out.println("Created client for node: " + fullnodelist.get(this.ipIdx) + " INDEX: " + this.ipIdx);
-				  JSONObject json_obj = getBlockWithCustomGrpc(-1, grpc);
-				  System.out.println("Got JSON result from node: " + json_obj);
-				  System.out.println("Got result from node " + fullnodelist.get(this.ipIdx) + " ; block is : " + json_obj.get("blockNum"));
-
-				  grpc.shutdownNow();
-				  Long blocknum = (Long)json_obj.get("blockNum");
-				  return new Pair<>(this.ipIdx, blocknum);
-			  }catch (Exception e){
-				  System.out.println("Grpc exception: " + e.getMessage());
-			  }
-			  return new Pair<>(this.ipIdx, Long.MIN_VALUE);
-		  }
-	  }
 
   	Thread thread = new Thread(new Runnable() {
 		@Override
@@ -1375,132 +1522,30 @@ public class TronClient {
 					System.out.println("QUEUE SIZE: " + priorityQueue.size());
 
 					ItemBaggage baggage = priorityQueue.take();
-					JSONObject res_obj = runMethod(baggage, 10000);
-					if (res_obj != null) {
-						String currnode = WalletClient.getCurrFullNode();
-						System.out.println("NODE: " + currnode);
-						res_obj.put("fullnode", currnode);
-						baggage.addToQueue(res_obj);
+					JSONObject res_obj = runMethod(baggage, baggage.getTimeout());
+					System.out.println("RESOBJ: " + res_obj);
+					if (res_obj != null && res_obj.size() != 0) {
+						if (res_obj.containsKey("result") && res_obj.get("result").equals(FAILED)){
+							smartNodeAutoSelect(baggage.isSolidity(), baggage);
+						}else{
+							String currnode = "";
+							if (baggage.isSolidity()){
+								currnode = soliditynodelist.get(ip_idx);
+							}else{
+								currnode = fullnodelist.get(ip_idx);
+							}
+
+							System.out.println("NODE: " + currnode);
+							res_obj.put("fullnode", currnode);
+							baggage.addToQueue(res_obj);
+						}
+
+
 					} else {
-						String node = fullnodelist.get(++ip_idx % fullnodelist.size());
-						WalletClient.connectNewGrpcIP(node);
-						Thread.sleep(500);
-						priorityQueue.offer(baggage);
+						/*roundRobinNode(baggage.isSolidity());
+						priorityQueue.offer(baggage);*/
 
-						/*
-						ExecutorService executor = Executors.newFixedThreadPool(fullnodelist.size());
-						CompletionService<Pair<Integer,Long>> comp_serv = new ExecutorCompletionService<>(executor);
-						ArrayList<Future<Pair<Integer,Long>>> futures_arr = new ArrayList<>();
-						ArrayList<Pair<Integer,Long>> latency_list = new ArrayList<>();
-						boolean success = false;
-						long timeout = 2000;
-
-						try {
-							for (int i = 0; i < fullnodelist.size(); i++) {
-								IPCallback ipcallback = new IPCallback(i);
-								Future<Pair<Integer,Long>> future = comp_serv.submit(ipcallback);
-								futures_arr.add(future);
-							}
-
-							for (int x = 0; x < fullnodelist.size(); x++) {
-								try {
-									Future<Pair<Integer,Long>> f_pair = comp_serv.poll(timeout, TimeUnit.MILLISECONDS);
-									if (f_pair == null){
-										throw new TimeoutException("No more items to compute");
-									}
-									Pair<Integer,Long> res_pair = f_pair.get();
-									int upperbound = (int) Math.floor(fullnodelist.size() * 0.2);
-									latency_list.add(res_pair);
-
-									if (latency_list.size() >= upperbound){
-										boolean dirty = false;
-										for(Pair<Integer,Long> p: latency_list){
-											Long blocknum = p.getValue();
-											if (blocknum.longValue() != latency_list.get(0).getValue().longValue()){
-												dirty = true;
-												break;
-											}
-										}
-
-										System.out.println("Dirty? " + dirty);
-
-										if (!dirty && latency_list.get(0).getValue() != Long.MIN_VALUE){
-											//pick the smallest latency node -- fastest
-											System.out.println("inside");
-
-
-											for(int i = 0; i < latency_list.size();i++){
-												int ipidx = latency_list.get(i).getKey();
-												String fullnode = fullnodelist.get(ipidx);
-
-												if (!WalletClient.getCurrFullNode().equals(fullnode)) {
-													boolean conn_res = WalletClient.connectNewGrpcIP(fullnode);
-													if (!conn_res){
-														continue;
-													}else{
-														success = true;
-														break; //connection success
-													}
-												}
-											}
-
-											if (success){
-												break; //we are done
-											}
-
-										}//else wait for completion
-									}
-
-
-								} catch (ExecutionException e) {
-
-								} catch (InterruptedException e) {
-
-								} catch(TimeoutException e){
-									System.out.println("Node timeout; no result came Retry: " + x);
-								}
-							}
-
-							if (!success){
-								System.out.println("Block array: " + Arrays.toString(latency_list.toArray()));
-
-								//find the most synced block
-								int maxidx = 0;
-								Long maxval = Long.MIN_VALUE;
-								for(int i = 0; i < latency_list.size(); i++){
-									if (latency_list.get(i).getValue() > maxval){
-										maxidx = latency_list.get(i).getKey();
-										maxval = latency_list.get(i).getValue();
-									}
-								}
-
-								String ip = fullnodelist.get(maxidx);
-
-								System.out.println("Want to connect to " + ip);
-								if (WalletClient.getCurrFullNode() != ip){
-									System.out.println("About to connect to: " + ip);
-									WalletClient.connectNewGrpcIP(ip);
-								}
-							}
-
-							addToQueue(baggage);
-
-
-						}finally {
-							System.out.println("Cancelling all futures");
-							try {
-								for (Future<Pair<Integer, Long>> future : futures_arr) {
-									if (!future.isDone()){
-										future.cancel(true);
-									}
-
-								}
-								executor.shutdown();
-							}catch (Exception e){
-								System.out.println("Future cancelled: " + e.getMessage());
-							}
-							//Thread.sleep(1000);
-						}*/
+						smartNodeAutoSelect(baggage.isSolidity(), baggage);
 
 					}
 				}
@@ -1512,5 +1557,43 @@ public class TronClient {
   	thread.start();
   }
 
+	class IPCallback implements Callable<Pair<Integer,Long>> {
+		private int ipIdx;
+		private Boolean isSolidity;
+
+		IPCallback(int idx, Boolean isSolidity){
+			this.ipIdx = idx;
+			this.isSolidity = isSolidity;
+		}
+
+		public Pair<Integer,Long> call() {
+			try{
+				GrpcClient grpc;
+				if (isSolidity){
+					grpc =  new GrpcClient(fullnodelist.get(0), soliditynodelist.get(this.ipIdx));
+					System.out.println("Created client for solidity node: " + soliditynodelist.get(this.ipIdx) + " INDEX: " + this.ipIdx);
+				}else{
+					grpc =  new GrpcClient(fullnodelist.get(this.ipIdx), soliditynodelist.get(0));
+					System.out.println("Created client for fullnode: " + fullnodelist.get(this.ipIdx) + " INDEX: " + this.ipIdx);
+				}
+
+				JSONObject json_obj = getBlockWithCustomGrpc(-1, grpc);
+				System.out.println("Got JSON result from node: " + json_obj);
+
+				if (isSolidity){
+					System.out.println("Got result from soliditynode " + soliditynodelist.get(this.ipIdx) + " ; block is : " + json_obj.get("blockNum"));
+				}else{
+					System.out.println("Got result from fullnode " + fullnodelist.get(this.ipIdx) + " ; block is : " + json_obj.get("blockNum"));
+				}
+
+				grpc.shutdownNow();
+				Long blocknum = (Long)json_obj.get("blockNum");
+				return new Pair<>(this.ipIdx, blocknum);
+			}catch (Exception e){
+				System.out.println("Grpc exception: " + e.getMessage());
+			}
+			return new Pair<>(this.ipIdx, Long.MIN_VALUE);
+		}
+	}
 
 }

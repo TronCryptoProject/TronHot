@@ -22,6 +22,7 @@ import org.tron.common.crypto.ECKey;
 import org.tron.common.crypto.ECKey.ECDSASignature;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.Transaction.Contract;
+import org.tron.walletserver.WalletClient;
 
 import java.security.SignatureException;
 import java.util.Arrays;
@@ -127,19 +128,33 @@ public class TransactionUtils {
     byte[] hash = sha256(signedTransaction.getRawData().toByteArray());
     int count = signedTransaction.getSignatureCount();
     if (count == 0) {
+      System.out.println("Sig count is 0");
       return false;
     }
+
+    System.out.println("signature count: " +count);
+    System.out.println("hash: " +Arrays.toString(hash));
     for (int i = 0; i < count; ++i) {
       try {
         Transaction.Contract contract = listContract.get(i);
         byte[] owner = getOwner(contract);
+
+        System.out.println("Contract type is transfer: " + (contract.getType() == Contract.ContractType.TransferContract));
+        System.out.println("signature: " + Arrays.toString(signedTransaction.getSignature(i).toByteArray()));
+
+
         byte[] address = ECKey
             .signatureToAddress(hash, getBase64FromByteString(signedTransaction.getSignature(i)));
         if (!Arrays.equals(owner, address)) {
+          String s_owner = WalletClient.encode58Check(owner);
+          String a_address = WalletClient.encode58Check(address);
+          System.out.println("Owner doesn't equal address=> owner: " + s_owner
+            + " address: " + a_address);
           return false;
         }
       } catch (SignatureException e) {
         e.printStackTrace();
+        System.out.println("signature exception: " + e.getMessage());
         return false;
       }
     }
@@ -154,7 +169,7 @@ public class TransactionUtils {
       ECDSASignature signature = myKey.sign(hash);
       ByteString bsSign = ByteString.copyFrom(signature.toByteArray());
       transactionBuilderSigned.addSignature(
-          bsSign);//Each contract may be signed with a different private key in the future.
+              bsSign);//Each contract may be signed with a different private key in the future.
     }
 
     transaction = transactionBuilderSigned.build();

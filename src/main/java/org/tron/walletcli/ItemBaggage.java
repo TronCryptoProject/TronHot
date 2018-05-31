@@ -13,19 +13,34 @@ class ItemPriority{
 }
 
 public class ItemBaggage implements Comparable<ItemBaggage>{
-    private Method method;
+    public Method method;
     private BlockingQueue<JSONObject> queue;
     private Object[] args;
     private int priority;
     private Object instance_obj;
+    private long timeout;
+    private boolean solidity_node_required = false;
 
-    public ItemBaggage(int priority, BlockingQueue<JSONObject> resQueue,
+    public ItemBaggage(int priority, long timeout, BlockingQueue<JSONObject> resQueue,
                        Object instance_obj, Method method, Object... args){
         this.method = method;
         this.queue = resQueue;
         this.args = args;
         this.priority = priority;
         this.instance_obj = instance_obj;
+        this.timeout = timeout;
+
+        if (method.getName().equals("getTransactionsSocket")){
+            this.solidity_node_required = true;
+        }
+    }
+
+    public boolean isSolidity(){
+        return solidity_node_required;
+    }
+
+    public long getTimeout(){
+        return timeout;
     }
 
     public int getPriority(){
@@ -52,6 +67,7 @@ public class ItemBaggage implements Comparable<ItemBaggage>{
             e.printStackTrace();
             System.out.println("invokeMethod exception: " + e.getLocalizedMessage());
             res_obj = new JSONObject();
+            res_obj.put("invokeMethod", TronClient.FAILED);
             res_obj.put("result", TronClient.FAILED);
             res_obj.put("reason", "Failed to call method: " + e.toString());
             return res_obj;

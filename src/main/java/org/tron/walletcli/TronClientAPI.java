@@ -20,7 +20,12 @@ import java.util.concurrent.BlockingQueue;
 public class TronClientAPI {
     private HashMap<String, TronClient> sessionMap = new HashMap<>();
     private HashMap<String, TronClient> wSessionMap = new HashMap<>();
-    private TronClient globalTronClient = new TronClient();
+    private TronClient txTronClient = new TronClient(true);
+    private TronClient blockTronClient = new TronClient(true);
+    private TronClient witnessTronClient = new TronClient(true);
+    private TronClient nodeTronClient = new TronClient(true);
+
+
     public static final String FAILED = "failed";
     public static final String SUCCESS = "success";
     private JSONObject reserve_json = new JSONObject();
@@ -48,11 +53,7 @@ public class TronClientAPI {
         password = encryption.decryptText(password);
         accountName = encryption.decryptText(accountName);
         TronClient tronClient = new TronClient();
-        JSONObject json_obj = getResultFromQueue("registerWallet",
-                                                new Class[]{String.class, String.class},
-                                                new Object[]{password, accountName},
-                                                tronClient,
-                                                ItemPriority.HIGH);
+        JSONObject json_obj = tronClient.registerWallet(password, accountName);
         tronClient.login(password);
         sessionMap.put(tronClient.getAddress().get("address").toString(), tronClient);
 
@@ -74,19 +75,13 @@ public class TronClientAPI {
         privKey = encryption.decryptText(privKey);
 
         TronClient tronClient = new TronClient();;
-
-        JSONObject json_obj = getResultFromQueue("importWallet",
-                new Class[]{String.class, String.class},
-                new Object[]{password, privKey},
-                tronClient,
-                ItemPriority.HIGH);
+        JSONObject json_obj = tronClient.importWallet(password, privKey);
         tronClient.login(password);
 
         sessionMap.put(tronClient.getAddress().get("address").toString(), tronClient);
         System.out.println("SESSIONS MAP: " + tronClient.getAddress().get("address").toString());
         System.out.println("MAP SIZE: " + sessionMap.size());
         return encryption.encryptObject(json_obj);
-        //return json_obj;
     }
 
     @RequestMapping(value="/restoreWallet", method=RequestMethod.POST)
@@ -94,17 +89,11 @@ public class TronClientAPI {
 
         pubAddress = encryption.decryptText(pubAddress);
         TronClient tronClient = new TronClient();
+        JSONObject json_obj = tronClient.restoreWallet(pubAddress);
 
-        JSONObject json_obj = getResultFromQueue("restoreWallet",
-                new Class[]{String.class},
-                new Object[]{pubAddress},
-                tronClient,
-                ItemPriority.HIGH);
-
-        if (json_obj.containsKey("result") && json_obj.get("result") == SUCCESS){
-            wSessionMap.put(pubAddress, tronClient);
-        }
-
+        System.out.println("Adding " + pubAddress + " in wsessionmap");
+        wSessionMap.put(pubAddress, tronClient);
+        System.out.println("wsessionmap size:  " + wSessionMap.size());
         return encryption.encryptObject(json_obj);
     }
 
@@ -122,23 +111,15 @@ public class TronClientAPI {
         if (is_watch){
             if (wSessionMap.containsKey(pubAddress)){
                 TronClient tronClient = wSessionMap.get(pubAddress);
-                JSONObject json_obj = getResultFromQueue("logout",
-                        new Class[]{},
-                        new Object[]{},
-                        tronClient,
-                        ItemPriority.HIGH);
-
+                JSONObject json_obj = tronClient.logout();
+                wSessionMap.remove(pubAddress);
                 return encryption.encryptObject(json_obj);
             }
         }else{
             if (sessionMap.containsKey(pubAddress)){
                 TronClient tronClient = sessionMap.get(pubAddress);
-                JSONObject json_obj = getResultFromQueue("logout",
-                        new Class[]{},
-                        new Object[]{},
-                        tronClient,
-                        ItemPriority.HIGH);
-
+                JSONObject json_obj = tronClient.logout();
+                sessionMap.remove(pubAddress);
                 return encryption.encryptObject(json_obj);
             }
         }
@@ -156,11 +137,7 @@ public class TronClientAPI {
 
         if (sessionMap.containsKey(pubAddress)){
             TronClient tronClient = sessionMap.get(pubAddress);
-            JSONObject json_obj = getResultFromQueue("backupWallet",
-                    new Class[]{String.class},
-                    new Object[]{password},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.backupWallet(password);
 
             return encryption.encryptObject(json_obj);
         }
@@ -190,11 +167,8 @@ public class TronClientAPI {
 
             System.out.println("WWITNESSES:" + witness);
             TronClient tronClient = wSessionMap.get(pubAddress);
-            JSONObject json_obj = getResultFromQueue("prepareVoteWitness",
-                    new Class[]{HashMap.class},
-                    new Object[]{witness},
-                    tronClient,
-                    ItemPriority.HIGH);
+
+            JSONObject json_obj = tronClient.prepareVoteWitness(witness);
 
             return encryption.encryptObject(json_obj);
         }
@@ -225,18 +199,14 @@ public class TronClientAPI {
             System.out.println("WITNESSES: " + witness);
             TronClient tronClient = sessionMap.get(pubAddress);
 
-            JSONObject json_obj = getResultFromQueue("voteWitness",
-                    new Class[]{HashMap.class},
-                    new Object[]{witness},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.voteWitness(witness);
 
             return encryption.encryptObject(json_obj);
         }
         return encryption.encryptObject(reserve_json);
     }
 
-    @MessageMapping("/accountInfo")
+    /*@MessageMapping("/accountInfo")
     @SendTo("/persist/accountInfo")
     public String queryAccountSocket(String jsonMessage){
         JSONParser parser = new JSONParser();
@@ -245,6 +215,7 @@ public class TronClientAPI {
             try{
                 json_obj = (JSONObject)parser.parse(encryption.decryptText(jsonMessage));
                 boolean is_watch = Boolean.parseBoolean((String)json_obj.get("isWatch"));
+                System.out.println("WATCH IS: " + is_watch);
                 String pub_add = (String)json_obj.get("pubAddress");
                 String res = getAccountInfo(pub_add, is_watch);
                 System.out.println("ACCRES: " + res);
@@ -255,11 +226,11 @@ public class TronClientAPI {
             }
         }
         return encryption.encryptObject(new JSONObject());
-    }
+    }*/
 
-    @RequestMapping(value="/accountInfo/{pubAddress}", method=RequestMethod.GET)
-    public String queryAccountJSON(@PathVariable("pubAddress") String pubAddress,
-                                       @PathVariable(value="isWatch", required=false) String isWatch){
+    @RequestMapping(value="/accountInfo", method=RequestMethod.POST)
+    public String queryAccountJSON(@RequestParam("pubAddress") String pubAddress,
+                                   @RequestParam("isWatch") String isWatch){
         pubAddress = encryption.decryptText(pubAddress);
         boolean is_watch = false;
         isWatch = encryption.decryptText(isWatch);
@@ -271,14 +242,17 @@ public class TronClientAPI {
 
     private String getAccountInfo(String pubAddress, boolean isWatch){
         if (isWatch){
+            System.out.println("WSessionMap: " + wSessionMap);
+            System.out.println("WSessionMap contains " + pubAddress  + " : " + wSessionMap.containsKey(pubAddress));
             if (wSessionMap.containsKey(pubAddress)){
                 TronClient tronClient = wSessionMap.get(pubAddress);
                 JSONObject json_obj = getResultFromQueue("queryAccountJSON",
                         new Class[]{},
                         new Object[]{},
                         tronClient,
-                        ItemPriority.HIGH);
-
+                        ItemPriority.LOW,
+                        5000);
+                json_obj.put("accountNode", tronClient.getCurrNode(false));
                 return encryption.encryptObject(json_obj);
             }
         }else{
@@ -288,8 +262,9 @@ public class TronClientAPI {
                         new Class[]{},
                         new Object[]{},
                         tronClient,
-                        ItemPriority.HIGH);
-
+                        ItemPriority.LOW,
+                        5000);
+                json_obj.put("accountNode", tronClient.getCurrNode(false));
                 return encryption.encryptObject(json_obj);
             }
         }
@@ -309,17 +284,10 @@ public class TronClientAPI {
             TronClient tronClient = sessionMap.get(pubAddress);
             Double dbl_amount = Double.parseDouble(amount.trim());
             long long_amount = dbl_amount.longValue();
-            //JSONObject json_obj = tronClient.sendCoin(toAddress, long_amount);
-            JSONObject json_obj = getResultFromQueue("sendCoin",
-                    new Class[]{String.class, long.class},
-                    new Object[]{toAddress, long_amount},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.sendCoin(toAddress, long_amount);
 
             return encryption.encryptObject(json_obj);
-            //return json_obj;
         }
-        //return new JSONObject();
         return encryption.encryptObject(reserve_json);
     }
 
@@ -339,11 +307,7 @@ public class TronClientAPI {
             Double dbl_duration = Double.parseDouble(duration.trim());
             long long_duration = dbl_duration.longValue();
 
-            JSONObject json_obj = getResultFromQueue("freezeBalance",
-                    new Class[]{long.class, long.class},
-                    new Object[]{long_amount, long_duration},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.freezeBalance(long_amount,long_duration);
 
             return encryption.encryptObject(json_obj);
         }
@@ -358,11 +322,7 @@ public class TronClientAPI {
         if (sessionMap.containsKey(pubAddress)){
             TronClient tronClient = sessionMap.get(pubAddress);
 
-            JSONObject json_obj = getResultFromQueue("unfreezeBalance",
-                    new Class[]{},
-                    new Object[]{},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.unfreezeBalance();
 
             return encryption.encryptObject(json_obj);
         }
@@ -386,11 +346,7 @@ public class TronClientAPI {
             Double dbl_duration = Double.parseDouble(duration.trim());
             long long_duration = dbl_duration.longValue();
 
-            JSONObject json_obj = getResultFromQueue("prepareFreezeBalance",
-                    new Class[]{long.class, long.class},
-                    new Object[]{long_amount, long_duration},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.prepareFreezeBalance(long_amount, long_duration);
 
             return encryption.encryptObject(json_obj);
         }
@@ -405,11 +361,7 @@ public class TronClientAPI {
         if (wSessionMap.containsKey(pubAddress)){
             TronClient tronClient = wSessionMap.get(pubAddress);
 
-            JSONObject json_obj = getResultFromQueue("prepareUnfreezeBalance",
-                    new Class[]{},
-                    new Object[]{},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.prepareUnfreezeBalance();
 
             return encryption.encryptObject(json_obj);
         }
@@ -431,11 +383,7 @@ public class TronClientAPI {
             Double dbl_amount = Double.parseDouble(amount.trim());
             long long_amount = dbl_amount.longValue();
 
-            JSONObject json_obj = getResultFromQueue("prepareTransaction",
-                    new Class[]{String.class, long.class},
-                    new Object[]{toAddress, long_amount},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.prepareTransaction(toAddress, long_amount);
 
             return encryption.encryptObject(json_obj);
         }
@@ -459,11 +407,7 @@ public class TronClientAPI {
 
         if (wSessionMap.containsKey(pubAddress)){
             TronClient tronClient = wSessionMap.get(pubAddress);
-            JSONObject json_obj = getResultFromQueue("broadcastTransaction",
-                    new Class[]{String.class},
-                    new Object[]{hextx},
-                    tronClient,
-                    ItemPriority.HIGH);
+            JSONObject json_obj = tronClient.broadcastTransaction(hextx);
 
             return encryption.encryptObject(json_obj);
         }
@@ -473,10 +417,18 @@ public class TronClientAPI {
     @RequestMapping(value="/txs/{pubAddress}", method=RequestMethod.GET)
     public String getTransactions(@PathVariable("pubAddress") String pubAddress){
         pubAddress = encryption.decryptText(pubAddress);
-        return encryption.encryptObject(globalTronClient.getTransactions(pubAddress));
+        System.out.println("TXSPUBADDRESS2: " + pubAddress);
+        JSONObject json_obj = getResultFromQueue("getTransactionsSocket",
+                new Class[]{String.class},
+                new Object[]{pubAddress},
+                txTronClient,
+                ItemPriority.LOW,
+                12000);
+        return encryption.encryptObject(json_obj);
     }
 
-    @MessageMapping("/txs")
+
+    /*@MessageMapping("/txs")
     @SendTo("/persist/txs")
     public String getTransactionsSocket(String pubAddress){
         try{
@@ -485,8 +437,9 @@ public class TronClientAPI {
             JSONObject json_obj = getResultFromQueue("getTransactionsSocket",
                     new Class[]{String.class},
                     new Object[]{pubAddress},
-                    globalTronClient,
-                    ItemPriority.HIGH);
+                    txTronClient,
+                    ItemPriority.LOW,
+                    12000);
             return encryption.encryptObject(json_obj);
 
         }catch (Exception e){
@@ -494,7 +447,7 @@ public class TronClientAPI {
         }
         return encryption.encryptObject(new JSONObject());
 
-    }
+    }*/
 
     @RequestMapping(value="/block/{blockNum}", method=RequestMethod.GET)
     public String getBlock(@PathVariable(value="blockNum") String blockNum){
@@ -503,8 +456,9 @@ public class TronClientAPI {
             JSONObject json_obj = getResultFromQueue("getBlock",
                     new Class[]{int.class},
                     new Object[]{Integer.parseInt(blockNum)},
-                    globalTronClient,
-                    ItemPriority.LOW);
+                    blockTronClient,
+                    ItemPriority.LOW,
+                    8000);
             return encryption.encryptObject(json_obj);
         }
         return encryption.encryptObject(new JSONObject());
@@ -517,8 +471,9 @@ public class TronClientAPI {
         JSONObject json_obj = getResultFromQueue("getBlock",
                 new Class[]{int.class},
                 new Object[]{-1},
-                globalTronClient,
-                ItemPriority.LOW);
+                blockTronClient,
+                ItemPriority.LOW,
+                3000);
         return encryption.encryptObject(json_obj);
     }
 
@@ -527,8 +482,9 @@ public class TronClientAPI {
         JSONObject json_obj = getResultFromQueue("listWitnesses",
                 new Class[]{},
                 new Object[]{},
-                globalTronClient,
-                ItemPriority.HIGH);
+                witnessTronClient,
+                ItemPriority.HIGH,
+                8000);
         return encryption.encryptObject(json_obj);
     }
 
@@ -549,20 +505,49 @@ public class TronClientAPI {
     }
 
     @RequestMapping(value="/connectNode", method=RequestMethod.POST)
-    public String connectNode(@RequestParam("node") String node){
+    public String connectNode(@RequestParam("node") String node,
+                              @RequestParam("pubAddress") String pubAddress,
+                              @RequestParam(value="isWatch",required =false) String isWatch){
         node = encryption.decryptText(node);
-        return encryption.encryptObject( globalTronClient.connectNode(node));
+        pubAddress = encryption.decryptText(pubAddress);
+        boolean is_watch = false;
+        isWatch = encryption.decryptText(isWatch);
+        if (isWatch != null && !isWatch.equals("") && Boolean.parseBoolean(isWatch) == true){
+            is_watch = true;
+        }
+
+        TronClient tronClient = null;
+        if (is_watch) {
+            if (wSessionMap.containsKey(pubAddress)) {
+                tronClient = wSessionMap.get(pubAddress);
+            }
+        }else{
+            if (sessionMap.containsKey(pubAddress)){
+                tronClient = sessionMap.get(pubAddress);
+            }
+        }
+
+        JSONObject json_obj = new JSONObject();
+        if (tronClient != null){
+            json_obj = tronClient.connectNode(node);
+        }else{
+            json_obj = reserve_json;
+        }
+
+        return encryption.encryptObject(json_obj);
     }
 
     @MessageMapping("/nodes")
     @SendTo("/persist/nodes")
     @RequestMapping(value="/nodes", method=RequestMethod.GET)
     public String getNodes(){
+        System.out.println("GETTING NODES");
         JSONObject json_obj = getResultFromQueue("listNodes",
                 new Class[]{},
                 new Object[]{},
-                globalTronClient,
-                ItemPriority.HIGH);
+                nodeTronClient,
+                ItemPriority.HIGH,
+                5000);
         return encryption.encryptObject(json_obj);
     }
 
@@ -613,14 +598,14 @@ public class TronClientAPI {
     /* End Methods for purchasing TRX on Binance */
 
     private JSONObject getResultFromQueue(String methodName, Class[] methodClasses, Object[] methodParams,
-                                  TronClient tronClient, int priority){
+                                  TronClient tronClient, int priority, long timeout){
         BlockingQueue<JSONObject> queue = new ArrayBlockingQueue<>(1);
         try {
             Method method = TronClient.class.getMethod(methodName, methodClasses);
             ItemBaggage baggage = new ItemBaggage(
-                    priority, queue, tronClient, method, methodParams
+                    priority, timeout, queue, tronClient, method, methodParams
             );
-            TronClient.addToQueue(baggage);
+            tronClient.addToQueue(baggage);
             JSONObject res_obj = queue.take();
             return res_obj;
 

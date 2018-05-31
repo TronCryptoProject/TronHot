@@ -18,8 +18,10 @@ public class TxThread {
     public static final String SUCCESS = "success";
 
     private byte[] addressBytes;
-    public TxThread(byte[] addressBytes) {
+    private WalletClient walletClient;
+    public TxThread(byte[] addressBytes, WalletClient walletClient) {
         this.addressBytes = addressBytes;
+        this.walletClient = walletClient;
     }
 
     public JSONObject getTransactions(){
@@ -29,7 +31,7 @@ public class TxThread {
                 JSONObject json_obj = new JSONObject();
 
                 try{
-                    Optional<GrpcAPI.TransactionList> result = WalletClient.getTransactionsFromThis(addressBytes,
+                    Optional<GrpcAPI.TransactionList> result = walletClient.getTransactionsFromThis(addressBytes,
                             0, Integer.MAX_VALUE);
 
                     if (result.isPresent()) {
@@ -56,7 +58,7 @@ public class TxThread {
                 JSONObject json_obj = new JSONObject();
 
                 try{
-                    Optional<GrpcAPI.TransactionList> result = WalletClient.getTransactionsToThis(addressBytes,
+                    Optional<GrpcAPI.TransactionList> result = walletClient.getTransactionsToThis(addressBytes,
                             0, Integer.MAX_VALUE);
 
                     if (result.isPresent()) {
